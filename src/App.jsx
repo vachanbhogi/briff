@@ -38,6 +38,7 @@ function App() {
   const [modelStatus, setModelStatus] = useState('LOADING_MODEL');
   const [pulseCheckState, setPulseCheckState] = useState('OFFLINE'); // OFFLINE, PLACE_FINGERS, DETECTING, CORRECT
   const [showSkeleton, setShowSkeleton] = useState(true);
+  const [cprState, setCprState] = useState('CPR_OFFLINE');
   const [activeMode, setActiveMode] = useState('PULSE');
   const showSkeletonRef = useRef(true);
 
@@ -45,6 +46,13 @@ function App() {
   useEffect(() => {
     showSkeletonRef.current = showSkeleton;
   }, [showSkeleton]);
+
+  const activeModeRef = useRef('PULSE');
+
+  // Sync ref with activeMode state to avoid loop closures
+  useEffect(() => {
+    activeModeRef.current = activeMode;
+  }, [activeMode]);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -54,6 +62,25 @@ function App() {
   const leftTargetRef = useRef({ x: 0.5, y: 0.5 });
   const rightTargetRef = useRef({ x: 0.5, y: 0.5 });
   const initializedTargetsRef = useRef(false);
+
+  const sternumTargetRef = useRef({ x: 0.5, y: 0.5 });
+  const sternumInitializedRef = useRef(false);
+  const shoulderYHistoryRef = useRef([]);
+  const compressionPeaksRef = useRef([]);
+  const cprBpmRef = useRef(0);
+  const cprDepthRatioRef = useRef(0);
+  const cprStateRef = useRef('CPR_OFFLINE');
+  const cprPlacementValidRef = useRef(false);
+  const cprPhaseRef = useRef('UP');
+  const cprMinYRef = useRef(0);
+  const cprMaxYRef = useRef(0);
+  
+  const audioCtxRef = useRef(null);
+  const lastTickRef = useRef(0);
+
+  useEffect(() => {
+    cprStateRef.current = cprState;
+  }, [cprState]);
 
   // Initialize both Pose and Hand trackers inside the browser via WASM task bundles
   useEffect(() => {
@@ -99,23 +126,30 @@ function App() {
     // Fetch cameras
     const getDevices = async () => {
       try {
-        await navigator.mediaDevices.getUserMedia({ video: true }).then(s => {
-          s.getTracks().forEach(track => track.stop());
-        }).catch(() => {});
-
         const deviceList = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = deviceList.filter(device => device.kind === 'videoinput');
         setDevices(videoDevices);
-        if (videoDevices.length > 0) {
+        if (videoDevices.length > 0 && !selectedDeviceId) {
           setSelectedDeviceId(videoDevices[0].deviceId);
         }
       } catch (err) {
         console.error('Error listing devices:', err);
       }
     };
-    getDevices();
+
+    const initCameras = async () => {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true });
+        s.getTracks().forEach(track => track.stop());
+      } catch (e) {}
+      await getDevices();
+    };
+    initCameras();
+
+    navigator.mediaDevices.addEventListener('devicechange', getDevices);
 
     return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', getDevices);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, []);
@@ -148,6 +182,7 @@ function App() {
       let neckTargets = null;
       let leftPulseTriggered = false;
       let rightPulseTriggered = false;
+      let cprCompressionTriggered = false;
 
       // 2. Draw Body Pose Skeleton & Calculate Neck Coordinates
       if (poseResults.landmarks && poseResults.landmarks.length > 0) {
@@ -200,6 +235,152 @@ function App() {
             left: { ...leftTargetRef.current },
             right: { ...rightTargetRef.current }
           };
+        }
+
+        // CPR Sternum Target & Compression Detection
+        if (activeModeRef.current === 'CPR') {
+          const leftShoulder = landmarks[11];
+          const rightShoulder = landmarks[12];
+          const leftHip = landmarks[23];
+          const rightHip = landmarks[24];
+          if (leftShoulder && rightShoulder && leftHip && rightHip) {
+            const midShoulder = {
+              x: (leftShoulder.x + rightShoulder.x) / 2,
+              y: (leftShoulder.y + rightShoulder.y) / 2
+            };
+            const midHip = {
+              x: (leftHip.x + rightHip.x) / 2,
+              y: (leftHip.y + rightHip.y) / 2
+            };
+            
+            // Fixed ground target for dummy placement
+            const rawSternumX = 0.5;
+            const rawSternumY = 0.65;
+
+            if (!sternumInitializedRef.current) {
+              sternumTargetRef.current = { x: rawSternumX, y: rawSternumY };
+              sternumInitializedRef.current = true;
+            } else {
+              sternumTargetRef.current.x = sternumTargetRef.current.x * 0.88 + rawSternumX * 0.12;
+              sternumTargetRef.current.y = sternumTargetRef.current.y * 0.88 + rawSternumY * 0.12;
+            }
+
+            // Metronome
+            if (audioCtxRef.current) {
+              if (performance.now() - lastTickRef.current >= 545.45) { // ~110 BPM
+                lastTickRef.current = performance.now();
+                const osc = audioCtxRef.current.createOscillator();
+                const gain = audioCtxRef.current.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtxRef.current.destination);
+                osc.frequency.setValueAtTime(800, audioCtxRef.current.currentTime);
+                gain.gain.setValueAtTime(0.05, audioCtxRef.current.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtxRef.current.currentTime + 0.05);
+                osc.start();
+                osc.stop(audioCtxRef.current.currentTime + 0.05);
+              }
+            }
+
+            // Shoulder Oscillation Tracking (2D Scale-Invariant)
+            const history = shoulderYHistoryRef.current;
+            const rawShoulderY = midShoulder.y;
+            
+            // Apply low-pass filter to remove tracking jitter (50/50 mix for stable 2D landmarks)
+            let smoothedShoulderY = rawShoulderY;
+            if (history.length > 0) {
+              smoothedShoulderY = history[history.length - 1].y * 0.5 + rawShoulderY * 0.5;
+            }
+            
+            // Check CPR Posture (wrists together and below shoulders)
+            const leftWrist = landmarks[15];
+            const rightWrist = landmarks[16];
+            let isCprPosture = false;
+            
+            if (leftWrist && rightWrist) {
+              const wristDist = Math.hypot(leftWrist.x - rightWrist.x, leftWrist.y - rightWrist.y);
+              const wristsBelowShoulders = leftWrist.y > midShoulder.y && rightWrist.y > midShoulder.y;
+              // Wrists should be close together (clasped) and below the shoulders (leaning down)
+              // We use 0.25 to be lenient, as hands can overlap and confuse the model
+              if (wristDist < 0.25 && wristsBelowShoulders) {
+                isCprPosture = true;
+              }
+            } else if (leftWrist || rightWrist) {
+              // If one hand completely occludes the other, MediaPipe might only see one wrist.
+              // As long as it is below the shoulder, we'll allow it.
+              const visibleWrist = leftWrist || rightWrist;
+              if (visibleWrist.y > midShoulder.y) {
+                isCprPosture = true;
+              }
+            }
+
+            if (isCprPosture) {
+              history.push({ y: smoothedShoulderY, time: startTimeMs });
+              if (history.length > 90) history.shift();
+              
+              // 2D Peak Detection via UP/DOWN Phase State Machine (Scale-Invariant)
+              const torsoLength = Math.hypot(midHip.x - midShoulder.x, midHip.y - midShoulder.y);
+              const currY = smoothedShoulderY;
+
+              if (cprPhaseRef.current === 'UP') {
+                // Initialize anchor on first frame
+                if (cprMinYRef.current === 0) cprMinYRef.current = currY;
+                
+                // Track the highest physical point in the air (minimum Y value)
+                if (currY < cprMinYRef.current) {
+                  cprMinYRef.current = currY;
+                }
+                
+                // To enter DOWN phase, they must compress (Y increases) by at least 4.5% of torso length
+                if (currY - cprMinYRef.current > torsoLength * 0.045) {
+                  cprPhaseRef.current = 'DOWN';
+                  cprMaxYRef.current = currY; // initialize max Y for the bottom of stroke
+                }
+              } else if (cprPhaseRef.current === 'DOWN') {
+                // Track the lowest physical point towards the ground (maximum Y value)
+                if (currY > cprMaxYRef.current) {
+                  cprMaxYRef.current = currY;
+                }
+                
+                // To complete the stroke and trigger a beat, they must recoil (Y decreases) by at least 2% of torso length
+                if (cprMaxYRef.current - currY > torsoLength * 0.02) {
+                  const amplitude = cprMaxYRef.current - cprMinYRef.current;
+                  cprDepthRatioRef.current = amplitude / torsoLength; // Relative depth ratio
+                  
+                  const peaks = compressionPeaksRef.current;
+                  const peakTime = startTimeMs;
+                  
+                  // Debounce to prevent double counting (max 240 BPM)
+                  if (peaks.length === 0 || peakTime - peaks[peaks.length - 1] > 250) { 
+                    peaks.push(peakTime);
+                    cprCompressionTriggered = true;
+                    if (peaks.length > 6) peaks.shift(); // Keep 6 recent peaks for a stable rolling average
+                  }
+                  
+                  cprPhaseRef.current = 'UP';
+                  cprMinYRef.current = currY; // reset for next stroke
+                }
+              }
+            } else {
+              // If posture is broken (hands off chest, not in frame), freeze the state machine 
+              // so that camera jitter doesn't trigger false beats.
+            }
+
+            // Calculate and purge BPM
+            const peaks = compressionPeaksRef.current;
+            const nowMs = startTimeMs;
+            
+            // If they haven't done a compression in the last 1.5 seconds, they stopped.
+            if (peaks.length > 0 && nowMs - peaks[peaks.length - 1] > 1500) {
+              peaks.length = 0;
+            }
+
+            if (peaks.length >= 3) {
+              const avgInterval = (peaks[peaks.length - 1] - peaks[0]) / (peaks.length - 1);
+              cprBpmRef.current = Math.round(60000 / avgInterval);
+            } else if (peaks.length === 0) {
+              cprBpmRef.current = 0; // Reset BPM when stopped
+            }
+          }
         }
 
         // Draw Pose Connections (Neon Cyan)
@@ -261,111 +442,224 @@ function App() {
 
           // Check pulse intersection!
           // Carotid pulse is checked using the Index Finger Tip (8) & Middle Finger Tip (12)
-          const indexTip = handLandmarks[8];
-          const middleTip = handLandmarks[12];
+          if (activeModeRef.current === 'PULSE') {
+            const indexTip = handLandmarks[8];
+            const middleTip = handLandmarks[12];
 
-          if (indexTip && middleTip && neckTargets) {
-            // Proximity tests (both fingers must be within 5% distance of the target anchor)
-            const threshold = 0.052;
+            if (indexTip && middleTip && neckTargets) {
+              // Proximity tests (both fingers must be within 5% distance of the target anchor)
+              const threshold = 0.052;
 
-            const lDistIndex = Math.hypot(indexTip.x - neckTargets.left.x, indexTip.y - neckTargets.left.y);
-            const lDistMiddle = Math.hypot(middleTip.x - neckTargets.left.x, middleTip.y - neckTargets.left.y);
-            
-            const rDistIndex = Math.hypot(indexTip.x - neckTargets.right.x, indexTip.y - neckTargets.right.y);
-            const rDistMiddle = Math.hypot(middleTip.x - neckTargets.right.x, middleTip.y - neckTargets.right.y);
+              const lDistIndex = Math.hypot(indexTip.x - neckTargets.left.x, indexTip.y - neckTargets.left.y);
+              const lDistMiddle = Math.hypot(middleTip.x - neckTargets.left.x, middleTip.y - neckTargets.left.y);
+              
+              const rDistIndex = Math.hypot(indexTip.x - neckTargets.right.x, indexTip.y - neckTargets.right.y);
+              const rDistMiddle = Math.hypot(middleTip.x - neckTargets.right.x, middleTip.y - neckTargets.right.y);
 
-            if (lDistIndex < threshold && lDistMiddle < threshold) {
-              leftPulseTriggered = true;
+              if (lDistIndex < threshold && lDistMiddle < threshold) {
+                leftPulseTriggered = true;
+              }
+              if (rDistIndex < threshold && rDistMiddle < threshold) {
+                rightPulseTriggered = true;
+              }
             }
-            if (rDistIndex < threshold && rDistMiddle < threshold) {
-              rightPulseTriggered = true;
+          } else if (activeModeRef.current === 'CPR') {
+            const palm1 = handLandmarks[0];
+            const target = sternumTargetRef.current;
+            if (palm1 && sternumInitializedRef.current) {
+              const dist = Math.hypot(palm1.x - target.x, palm1.y - target.y);
+              if (dist < 0.08) {
+                // If this is the second hand, check if it's close to the first hand
+                // For simplicity we just see if ANY palm is within 8% of target.
+                cprPlacementValidRef.current = true;
+              }
             }
           }
         });
       }
 
-      // 4. Draw Neck Targets & Heartbeat Ripples
-      if (neckTargets) {
-        const pulseVal = Math.sin(performance.now() / 150) * 3; // subtle breathing scale
+      // Determine overall CPR placement status outside loop (needs to clear if hands gone)
+      if (activeModeRef.current === 'CPR' && (!handResults.landmarks || handResults.landmarks.length === 0)) {
+        cprPlacementValidRef.current = false;
+      }
 
-        // Draw Left Carotid Target
-        const lx = neckTargets.left.x * canvas.width;
-        const ly = neckTargets.left.y * canvas.height;
-        
-        ctx.beginPath();
-        ctx.arc(lx, ly, 16 + (leftPulseTriggered ? pulseVal * 2.5 : pulseVal), 0, 2 * Math.PI);
-        ctx.lineWidth = leftPulseTriggered ? 4 : 2;
-        ctx.strokeStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.shadowBlur = leftPulseTriggered ? 12 : 4;
-        ctx.shadowColor = leftPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.stroke();
+      // 4. Draw Neck Targets & Heartbeat Ripples (Pulse Mode only)
+      if (activeModeRef.current === 'PULSE') {
+        if (neckTargets) {
+          const pulseVal = Math.sin(performance.now() / 150) * 3; // subtle breathing scale
 
-        ctx.beginPath();
-        ctx.arc(lx, ly, 4, 0, 2 * Math.PI);
-        ctx.fillStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.fill();
-
-        // Target label string
-        ctx.font = 'bold 9px monospace';
-        ctx.fillStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.shadowBlur = 0;
-        ctx.fillText('CAROTID_PULSE_L', lx + 24, ly + 3);
-
-        // Draw Right Carotid Target
-        const rx = neckTargets.right.x * canvas.width;
-        const ry = neckTargets.right.y * canvas.height;
-        
-        ctx.beginPath();
-        ctx.arc(rx, ry, 16 + (rightPulseTriggered ? pulseVal * 2.5 : pulseVal), 0, 2 * Math.PI);
-        ctx.lineWidth = rightPulseTriggered ? 4 : 2;
-        ctx.strokeStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.shadowBlur = rightPulseTriggered ? 12 : 4;
-        ctx.shadowColor = rightPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.arc(rx, ry, 4, 0, 2 * Math.PI);
-        ctx.fillStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.fill();
-
-        ctx.fillStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
-        ctx.shadowBlur = 0;
-        ctx.fillText('CAROTID_PULSE_R', rx - 120, ry + 3);
-
-        // 5. Heartbeat Radar Ripple Animation on Active Match
-        // Renders expanding circular shockwaves radiating outward to visualize heartbeat check activity!
-        if (leftPulseTriggered || rightPulseTriggered) {
-          const activeX = leftPulseTriggered ? lx : rx;
-          const activeY = leftPulseTriggered ? ly : ry;
+          // Draw Left Carotid Target
+          const lx = neckTargets.left.x * canvas.width;
+          const ly = neckTargets.left.y * canvas.height;
           
-          const time = performance.now() / 1000;
-          const count = 3;
-          for (let i = 0; i < count; i++) {
-            const progress = (time + i / count) % 1; // normalized expand time 0 to 1
-            const radius = 16 + progress * 55;
-            const alpha = 1 - progress; // fade out
-            
-            ctx.beginPath();
-            ctx.arc(activeX, activeY, radius, 0, 2 * Math.PI);
-            ctx.strokeStyle = `rgba(0, 255, 102, ${alpha * 0.75})`;
-            ctx.lineWidth = 1.5;
-            ctx.shadowBlur = 4;
-            ctx.shadowColor = '#00ff66';
-            ctx.stroke();
-          }
-          ctx.shadowBlur = 0;
-        }
+          ctx.beginPath();
+          ctx.arc(lx, ly, 16 + (leftPulseTriggered ? pulseVal * 2.5 : pulseVal), 0, 2 * Math.PI);
+          ctx.lineWidth = leftPulseTriggered ? 4 : 2;
+          ctx.strokeStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.shadowBlur = leftPulseTriggered ? 12 : 4;
+          ctx.shadowColor = leftPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.stroke();
 
-        // Determine overall status
-        if (leftPulseTriggered || rightPulseTriggered) {
-          setPulseCheckState('CORRECT');
-        } else if (handResults.landmarks && handResults.landmarks.length > 0) {
-          setPulseCheckState('ALIGNING');
+          ctx.beginPath();
+          ctx.arc(lx, ly, 4, 0, 2 * Math.PI);
+          ctx.fillStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.fill();
+
+          // Target label string
+          ctx.font = 'bold 9px monospace';
+          ctx.fillStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.shadowBlur = 0;
+          ctx.save();
+          ctx.scale(-1, 1);
+          ctx.fillText('CAROTID_PULSE_L', -(lx - 24), ly + 3);
+          ctx.restore();
+
+          // Draw Right Carotid Target
+          const rx = neckTargets.right.x * canvas.width;
+          const ry = neckTargets.right.y * canvas.height;
+          
+          ctx.beginPath();
+          ctx.arc(rx, ry, 16 + (rightPulseTriggered ? pulseVal * 2.5 : pulseVal), 0, 2 * Math.PI);
+          ctx.lineWidth = rightPulseTriggered ? 4 : 2;
+          ctx.strokeStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.shadowBlur = rightPulseTriggered ? 12 : 4;
+          ctx.shadowColor = rightPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(rx, ry, 4, 0, 2 * Math.PI);
+          ctx.fillStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.fill();
+
+          ctx.fillStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
+          ctx.shadowBlur = 0;
+          ctx.save();
+          ctx.scale(-1, 1);
+          ctx.fillText('CAROTID_PULSE_R', -(rx + 90), ry + 3);
+          ctx.restore();
+
+          // 5. Heartbeat Radar Ripple Animation on Active Match
+          // Renders expanding circular shockwaves radiating outward to visualize heartbeat check activity!
+          if (leftPulseTriggered || rightPulseTriggered) {
+            const activeX = leftPulseTriggered ? lx : rx;
+            const activeY = leftPulseTriggered ? ly : ry;
+            
+            const time = performance.now() / 1000;
+            const count = 3;
+            for (let i = 0; i < count; i++) {
+              const progress = (time + i / count) % 1; // normalized expand time 0 to 1
+              const radius = 16 + progress * 55;
+              const alpha = 1 - progress; // fade out
+              
+              ctx.beginPath();
+              ctx.arc(activeX, activeY, radius, 0, 2 * Math.PI);
+              ctx.strokeStyle = `rgba(0, 255, 102, ${alpha * 0.75})`;
+              ctx.lineWidth = 1.5;
+              ctx.shadowBlur = 4;
+              ctx.shadowColor = '#00ff66';
+              ctx.stroke();
+            }
+            ctx.shadowBlur = 0;
+          }
+
+          // Determine overall status
+          if (leftPulseTriggered || rightPulseTriggered) {
+            setPulseCheckState('CORRECT');
+          } else if (handResults.landmarks && handResults.landmarks.length > 0) {
+            setPulseCheckState('ALIGNING');
+          } else {
+            setPulseCheckState('PLACE_FINGERS');
+          }
         } else {
-          setPulseCheckState('PLACE_FINGERS');
+          setPulseCheckState('ALIGN_BODY');
         }
-      } else {
-        setPulseCheckState('ALIGN_BODY');
+      } else if (activeModeRef.current === 'CPR') {
+        if (sternumInitializedRef.current) {
+          const target = sternumTargetRef.current;
+          const sx = target.x * canvas.width;
+          const sy = target.y * canvas.height;
+          
+          const pulseVal = Math.sin(performance.now() / 150) * 3;
+          const isValid = cprPlacementValidRef.current;
+
+          // Draw Dummy Outline Guide
+          const dummyWidth = canvas.width * 0.15;
+          const dummyHeight = canvas.height * 0.20;
+          
+          ctx.beginPath();
+          ctx.ellipse(sx, sy - dummyHeight * 0.2, dummyWidth, dummyHeight, 0, 0, 2 * Math.PI);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+          ctx.setLineDash([8, 6]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          ctx.beginPath();
+          ctx.arc(sx, sy - dummyHeight * 1.5, dummyWidth * 0.6, 0, 2 * Math.PI);
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+          ctx.setLineDash([8, 6]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          ctx.font = 'bold 14px monospace';
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.textAlign = 'center';
+          ctx.save();
+          ctx.scale(-1, 1);
+          ctx.fillText('ALIGN DUMMY HERE', -sx, sy - dummyHeight * 0.8);
+          ctx.restore();
+          ctx.textAlign = 'left'; // reset
+
+          ctx.beginPath();
+          ctx.arc(sx, sy, 20 + (isValid ? pulseVal * 2 : pulseVal), 0, 2 * Math.PI);
+          ctx.lineWidth = isValid ? 4 : 2;
+          ctx.strokeStyle = isValid ? '#00ff66' : '#ffaa00';
+          ctx.shadowBlur = isValid ? 12 : 4;
+          ctx.shadowColor = isValid ? '#00ff66' : '#ffaa00';
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(sx, sy, 5, 0, 2 * Math.PI);
+          ctx.fillStyle = isValid ? '#00ff66' : '#ffaa00';
+          ctx.fill();
+
+          ctx.font = 'bold 9px monospace';
+          ctx.fillStyle = isValid ? '#00ff66' : '#ffaa00';
+          ctx.shadowBlur = 0;
+          ctx.save();
+          ctx.scale(-1, 1);
+          ctx.fillText('STERNUM_TARGET', -(sx - 30), sy + 3);
+          ctx.restore();
+
+          if (cprCompressionTriggered) {
+            const time = performance.now() / 1000;
+            const count = 2;
+            for (let i = 0; i < count; i++) {
+              const progress = (time + i / count) % 1;
+              const radius = 20 + progress * 80;
+              const alpha = 1 - progress;
+              
+              ctx.beginPath();
+              ctx.arc(sx, sy, radius, 0, 2 * Math.PI);
+              ctx.strokeStyle = `rgba(0, 255, 102, ${alpha * 0.8})`;
+              ctx.lineWidth = 2;
+              ctx.stroke();
+            }
+          }
+
+          // State Machine
+          if (!isValid) {
+            setCprState('CPR_POSITION_HANDS');
+          } else {
+            const bpm = cprBpmRef.current;
+            if (bpm === 0) setCprState('CPR_COMPRESSING');
+            else if (bpm < 100) setCprState('CPR_RATE_SLOW');
+            else if (bpm <= 120) setCprState('CPR_RATE_GOOD');
+            else setCprState('CPR_RATE_FAST');
+          }
+        } else {
+          setCprState('CPR_ALIGN_BODY');
+        }
       }
     }
 
@@ -398,6 +692,22 @@ function App() {
         stream.getTracks().forEach(track => track.stop());
       }
       initializedTargetsRef.current = false; // Reset smoothing tracker on start
+      sternumInitializedRef.current = false;
+      shoulderYHistoryRef.current = [];
+      compressionPeaksRef.current = [];
+      cprBpmRef.current = 0;
+      cprDepthRatioRef.current = 0;
+      cprPlacementValidRef.current = false;
+      cprPhaseRef.current = 'UP';
+      cprMinYRef.current = 0;
+      cprMaxYRef.current = 0;
+
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume();
+      }
 
       const constraints = {
         video: deviceId ? { deviceId: { exact: deviceId } } : true,
@@ -407,6 +717,14 @@ function App() {
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       setStream(mediaStream);
       setIsActive(true);
+      
+      // Re-fetch devices now that a stream is active, as macOS/Safari 
+      // often hides laptop cameras until an active stream is opened
+      try {
+        const deviceList = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = deviceList.filter(device => device.kind === 'videoinput');
+        setDevices(videoDevices);
+      } catch (e) {}
       
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
@@ -425,7 +743,9 @@ function App() {
     }
     setIsActive(false);
     setPulseCheckState('OFFLINE');
+    setCprState('CPR_OFFLINE');
     initializedTargetsRef.current = false;
+    sternumInitializedRef.current = false;
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
@@ -457,41 +777,92 @@ function App() {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover rounded-3xl scale-x-[-1]"
+            className="w-full h-full object-contain rounded-3xl scale-x-[-1]"
           />
           {/* Absolute Skeleton + Hands + Targets Drawing Overlay */}
           <canvas
             ref={canvasRef}
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none rounded-3xl scale-x-[-1] z-10"
+            className="absolute inset-0 w-full h-full object-contain pointer-events-none rounded-3xl scale-x-[-1] z-10"
           />
 
           {/* Hyper-Visible Pulse Check Status HUD */}
           <div className="absolute top-6 inset-x-6 flex flex-col items-center justify-center pointer-events-none z-20">
-            <div className={`px-6 py-3 border rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg ${
-              pulseCheckState === 'CORRECT'
-                ? 'border-[#00ff66] bg-[#08090c]/85 text-[#00ff66] scale-105'
-                : pulseCheckState === 'ALIGNING'
-                ? 'border-yellow-500 bg-[#08090c]/85 text-yellow-400'
-                : pulseCheckState === 'PLACE_FINGERS'
-                ? 'border-[#ff3366] bg-[#08090c]/85 text-[#ff3366]'
-                : 'border-border-dark bg-[#08090c]/85 text-neutral-400'
-            }`}>
-              
-              <span className="tracking-widest font-extrabold uppercase text-[10px]">
-                {pulseCheckState === 'CORRECT' && '▶ [ PULSE_VERIFICATION: CORRECT ]'}
-                {pulseCheckState === 'ALIGNING' && '▷ [ ALIGNING INDEX & MIDDLE FINGERS ]'}
-                {pulseCheckState === 'PLACE_FINGERS' && '▷ [ CAROTID_PULSE_STANDBY ]'}
-                {pulseCheckState === 'ALIGN_BODY' && '▷ [ PLEASE ALIGN HEAD & SHOULDERS ]'}
-              </span>
+            {activeMode === 'PULSE' && (
+              <div className={`px-6 py-3 border rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg ${
+                pulseCheckState === 'CORRECT'
+                  ? 'border-[#00ff66] bg-[#08090c]/85 text-[#00ff66] scale-105'
+                  : pulseCheckState === 'ALIGNING'
+                  ? 'border-yellow-500 bg-[#08090c]/85 text-yellow-400'
+                  : pulseCheckState === 'PLACE_FINGERS'
+                  ? 'border-[#ff3366] bg-[#08090c]/85 text-[#ff3366]'
+                  : 'border-border-dark bg-[#08090c]/85 text-neutral-400'
+              }`}>
+                <span className="tracking-widest font-extrabold uppercase text-[10px]">
+                  {pulseCheckState === 'CORRECT' && '▶ [ PULSE_VERIFICATION: CORRECT ]'}
+                  {pulseCheckState === 'ALIGNING' && '▷ [ ALIGNING INDEX & MIDDLE FINGERS ]'}
+                  {pulseCheckState === 'PLACE_FINGERS' && '▷ [ CAROTID_PULSE_STANDBY ]'}
+                  {pulseCheckState === 'ALIGN_BODY' && '▷ [ PLEASE ALIGN HEAD & SHOULDERS ]'}
+                </span>
 
-              <span className="text-[10px] opacity-75 font-medium lowercase">
-                {pulseCheckState === 'CORRECT' && 'perfect positioning! check carotid pulse correctly.'}
-                {pulseCheckState === 'ALIGNING' && 'fingertips detected. place directly onto neck target circle.'}
-                {pulseCheckState === 'PLACE_FINGERS' && 'place index & middle fingertips on side of neck below jaw.'}
-                {pulseCheckState === 'ALIGN_BODY' && 'stand centered. head and shoulders must be fully visible.'}
-              </span>
+                <span className="text-[10px] opacity-75 font-medium lowercase">
+                  {pulseCheckState === 'CORRECT' && 'perfect positioning! check carotid pulse correctly.'}
+                  {pulseCheckState === 'ALIGNING' && 'fingertips detected. place directly onto neck target circle.'}
+                  {pulseCheckState === 'PLACE_FINGERS' && 'place index & middle fingertips on side of neck below jaw.'}
+                  {pulseCheckState === 'ALIGN_BODY' && 'stand centered. head and shoulders must be fully visible.'}
+                </span>
+              </div>
+            )}
 
-            </div>
+            {activeMode === 'CPR' && (
+              <div className={`px-6 py-3 border rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg min-w-[320px] ${
+                cprState === 'CPR_RATE_GOOD'
+                  ? 'border-[#00ff66] bg-[#08090c]/85 text-[#00ff66]'
+                  : cprState === 'CPR_RATE_SLOW' || cprState === 'CPR_RATE_FAST' || cprState === 'CPR_POSITION_HANDS' || cprState === 'CPR_ALIGN_BODY'
+                  ? 'border-[#ffaa00] bg-[#08090c]/85 text-[#ffaa00]'
+                  : 'border-[#00f0ff] bg-[#08090c]/85 text-[#00f0ff]'
+              }`}>
+                <span className="tracking-widest font-extrabold uppercase text-[10px]">
+                  ▶ [ CPR_COMPRESSION_TRAINING: ACTIVE ]
+                </span>
+                
+                <div className="w-full flex justify-between items-center text-[10px] uppercase tracking-wider py-1 border-y border-opacity-30 border-current my-1">
+                  <div className="flex flex-col items-start">
+                    <span>BPM: <span className="text-sm font-black">{cprBpmRef.current || '--'}</span></span>
+                    <span className="text-[8px] opacity-80">
+                      {cprState === 'CPR_RATE_SLOW' ? 'INCREASE RATE' : cprState === 'CPR_RATE_FAST' ? 'DECREASE RATE' : cprState === 'CPR_RATE_GOOD' ? 'RATE CORRECT' : 'AWAITING DATA'}
+                    </span>
+                  </div>
+                  
+                  <div className="flex flex-col items-end text-right">
+                    <span>DEPTH: {
+                      cprDepthRatioRef.current < 0.045 ? 'SHALLOW' : 
+                      cprDepthRatioRef.current > 0.06 ? 'DEEP' : 
+                      cprDepthRatioRef.current > 0 ? 'GOOD' : '--'
+                    }</span>
+                    <span className="text-[8px] opacity-80">
+                      PLACEMENT: {cprPlacementValidRef.current ? '✓ CENTERED' : '✕ OFF TARGET'}
+                    </span>
+                  </div>
+                </div>
+
+                <span className="text-[9px] opacity-75 font-medium lowercase">
+                  {cprState === 'CPR_ALIGN_BODY' ? 'align body — kneel centered in frame' :
+                   cprState === 'CPR_POSITION_HANDS' ? 'position hands — place heel of palms on target' :
+                   'compress at 100-120/min • push hard, push fast'}
+                </span>
+              </div>
+            )}
+
+            {activeMode === 'HEIMLICH' && (
+              <div className="px-6 py-3 border border-border-dark bg-[#08090c]/85 text-neutral-400 rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg">
+                <span className="tracking-widest font-extrabold uppercase text-[10px] text-[#00f0ff]">
+                  ▶ [ HEIMLICH_TRAINING_MODE: ACTIVE ]
+                </span>
+                <span className="text-[10px] opacity-75 font-medium lowercase">
+                  heimlich maneuver module active. stand behind patient and wrap hands around upper abdomen. (simulation)
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -548,8 +919,15 @@ function App() {
               
               {/* First-Aid Training Program Selector */}
               <select 
+                id="program-selector"
                 value={activeMode}
-                onChange={(e) => setActiveMode(e.target.value)}
+                onChange={(e) => {
+                  const mode = e.target.value;
+                  setActiveMode(mode);
+                  if (mode !== 'PULSE') {
+                    setPulseCheckState('OFFLINE');
+                  }
+                }}
                 aria-label="Select active first-aid training mode"
                 className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-2 hover:text-white uppercase font-bold tracking-wider"
               >
@@ -560,9 +938,10 @@ function App() {
 
               <div className="w-px h-3 bg-neutral-800"></div>
 
-              {devices.length > 1 && (
+              {devices.length > 0 && (
                 <>
                   <select 
+                    id="camera-selector"
                     value={selectedDeviceId}
                     onChange={handleDeviceChange}
                     aria-label="Select camera hardware input source"
