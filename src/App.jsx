@@ -48,6 +48,16 @@ function App() {
   const [displayCprPlacementValid, setDisplayCprPlacementValid] = useState(false);
   const lastStateSyncTimeRef = useRef(0);
 
+  // Heimlich Training States
+  const [displayHeimlichPhase, setDisplayHeimlichPhase] = useState('STANCE');
+  const [displayHeimlichJHookValid, setDisplayHeimlichJHookValid] = useState(false);
+  const [displayHeimlichHandsClasped, setDisplayHeimlichHandsClasped] = useState(false);
+  const heimlichPhaseRef = useRef('STANCE');
+  const heimlichJHookValidRef = useRef(false);
+  const heimlichHandsClaspedRef = useRef(false);
+  const heimlichTrajectoryRef = useRef([]);
+  const heimlichAnchorRef = useRef(null);
+
   // Additional settings: metronome muting & clinical help overlays
   const [muteMetronome, setMuteMetronome] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -434,6 +444,108 @@ function App() {
               cprBpmRef.current = 0; // Reset BPM when stopped
             }
           }
+        } else if (activeModeRef.current === 'HEIMLICH') {
+          const leftShoulder = landmarks[11];
+          const rightShoulder = landmarks[12];
+          const leftHip = landmarks[23];
+          const rightHip = landmarks[24];
+          const leftWrist = landmarks[15];
+          const rightWrist = landmarks[16];
+
+          if (leftShoulder && rightShoulder && leftHip && rightHip) {
+            const midShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+            const midShoulderX = (leftShoulder.x + rightShoulder.x) / 2;
+            const midHipY = (leftHip.y + rightHip.y) / 2;
+
+            heimlichAnchorRef.current = {
+              x: midShoulderX,
+              y: midShoulderY + (midHipY - midShoulderY) * 0.5
+            };
+
+            // Phase 1: Stance Check (Sideways)
+            // If the horizontal distance between left and right shoulder is very small, they are sideways
+            const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
+            const isSideways = shoulderWidth < 0.15; // threshold for profile view
+
+            if (heimlichPhaseRef.current === 'STANCE') {
+              if (isSideways) {
+                heimlichPhaseRef.current = 'HANDS';
+              }
+            }
+
+            // Phase 2: Hand Placement
+            if (heimlichPhaseRef.current === 'HANDS' || heimlichPhaseRef.current === 'THRUST') {
+              let isClasped = false;
+              let isCorrectHeight = false;
+              let handsCenter = null;
+
+              if (leftWrist && rightWrist) {
+                // Check if wrists are close together
+                const wristDist = Math.hypot(leftWrist.x - rightWrist.x, leftWrist.y - rightWrist.y);
+                isClasped = wristDist < 0.15;
+
+                // Check if hands are between chest and hips
+                const wristY = (leftWrist.y + rightWrist.y) / 2;
+                isCorrectHeight = wristY > midShoulderY && wristY < midHipY;
+                
+                handsCenter = {
+                  x: (leftWrist.x + rightWrist.x) / 2,
+                  y: wristY
+                };
+              } else if (leftWrist || rightWrist) {
+                // From a side profile, one hand might occlude the other
+                isClasped = true; // assume clasped if sideways and one hand is tracking
+                const wrist = leftWrist || rightWrist;
+                isCorrectHeight = wrist.y > midShoulderY && wrist.y < midHipY;
+                handsCenter = { x: wrist.x, y: wrist.y };
+              }
+
+              heimlichHandsClaspedRef.current = isClasped && isCorrectHeight;
+
+              if (heimlichPhaseRef.current === 'HANDS' && isClasped && isCorrectHeight && isSideways) {
+                heimlichPhaseRef.current = 'THRUST';
+              } else if (!isSideways) {
+                // If they turn back around, reset to stance
+                heimlichPhaseRef.current = 'STANCE';
+                heimlichJHookValidRef.current = false;
+                heimlichTrajectoryRef.current = [];
+              }
+
+              // Phase 3: Thrust Trajectory Tracking
+              if (heimlichPhaseRef.current === 'THRUST' && handsCenter && isClasped) {
+                const trajectory = heimlichTrajectoryRef.current;
+                trajectory.push({ x: handsCenter.x, y: handsCenter.y, time: startTimeMs });
+                
+                // Keep the last 1.5 seconds of trajectory
+                while (trajectory.length > 0 && startTimeMs - trajectory[0].time > 1500) {
+                  trajectory.shift();
+                }
+
+                // Analyze trajectory for J-Hook
+                if (trajectory.length > 10) {
+                  const startP = trajectory[0];
+                  const endP = trajectory[trajectory.length - 1];
+                  
+                  // Need to see rapid movement: Inward (X changes based on facing) and Upward (Y decreases)
+                  // From a side profile, "Inward" is horizontal movement toward the spine
+                  const deltaY = startP.y - endP.y; // Positive means upward
+                  const deltaX = Math.abs(startP.x - endP.x); // Absolute horizontal movement
+                  
+                  const velocityY = deltaY / (endP.time - startP.time);
+                  
+                  // If they moved up significantly and fast enough, and had some horizontal motion
+                  if (deltaY > 0.08 && deltaX > 0.02 && velocityY > 0.0001) {
+                    heimlichJHookValidRef.current = true;
+                  }
+                }
+              } else if (heimlichPhaseRef.current === 'THRUST' && !isClasped) {
+                 // Reset thrust validation if hands un-clasp
+                 heimlichJHookValidRef.current = false;
+                 heimlichTrajectoryRef.current = [];
+                 heimlichPhaseRef.current = 'HANDS';
+              }
+            }
+          }
         }
 
         // Draw Pose Connections (Neon Cyan)
@@ -727,6 +839,85 @@ function App() {
         } else {
           setCprState('CPR_ALIGN_BODY');
         }
+      } else if (activeModeRef.current === 'HEIMLICH') {
+        const phase = heimlichPhaseRef.current;
+        const valid = heimlichJHookValidRef.current;
+        
+        let cx = canvas.width / 2;
+        let cy = canvas.height / 2;
+        
+        if (heimlichAnchorRef.current) {
+          cx = heimlichAnchorRef.current.x * canvas.width;
+          cy = heimlichAnchorRef.current.y * canvas.height;
+        }
+
+        ctx.save();
+        // The canvas is scale(-1, 1) earlier in CSS, but for drawing text/arrows we need to account for the canvas context scale if any
+        ctx.scale(-1, 1);
+        ctx.font = 'bold 16px monospace';
+        ctx.textAlign = 'center';
+        
+        if (phase === 'STANCE') {
+          // Draw arrows indicating to turn sideways
+          ctx.fillStyle = 'rgba(255, 170, 0, 0.8)';
+          ctx.fillText('TURN 90° (PROFILE VIEW)', -cx, cy - 100);
+          
+          // Draw rotation arrows
+          ctx.beginPath();
+          ctx.ellipse(-cx, cy, 60, 20, 0, Math.PI, 2 * Math.PI);
+          ctx.strokeStyle = '#ffaa00';
+          ctx.lineWidth = 4;
+          ctx.stroke();
+          
+          ctx.beginPath();
+          ctx.moveTo(-cx - 60, cy);
+          ctx.lineTo(-cx - 70, cy - 15);
+          ctx.lineTo(-cx - 50, cy - 15);
+          ctx.fill();
+        } else if (phase === 'HANDS') {
+          // Draw target zone for hands (between chest and navel)
+          ctx.fillStyle = 'rgba(0, 255, 102, 0.8)';
+          ctx.fillText('CLASP HANDS HERE', -cx, cy - 60);
+          
+          ctx.beginPath();
+          ctx.rect(-cx - 50, cy - 40, 100, 80);
+          ctx.strokeStyle = '#00ff66';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([8, 6]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        } else if (phase === 'THRUST') {
+          ctx.fillStyle = valid ? '#00ff66' : 'rgba(0, 240, 255, 0.8)';
+          ctx.fillText(valid ? 'J-HOOK SUCCESS!' : 'EXECUTE J-HOOK THRUST', -cx, cy - 100);
+          
+          // Draw J-Hook arrow
+          ctx.beginPath();
+          ctx.moveTo(-cx + 40, cy + 40);
+          ctx.lineTo(-cx - 20, cy + 40); // inward
+          ctx.lineTo(-cx - 20, cy - 40); // upward
+          
+          ctx.strokeStyle = valid ? '#00ff66' : '#00f0ff';
+          ctx.lineWidth = 8;
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+          
+          // Arrowhead
+          ctx.beginPath();
+          ctx.moveTo(-cx - 20, cy - 40);
+          ctx.lineTo(-cx - 35, cy - 20);
+          ctx.lineTo(-cx - 5, cy - 20);
+          ctx.fillStyle = valid ? '#00ff66' : '#00f0ff';
+          ctx.fill();
+
+          if (valid) {
+             const pulseVal = Math.sin(performance.now() / 150) * 5;
+             ctx.beginPath();
+             ctx.arc(-cx, cy - 60, 80 + pulseVal, 0, 2*Math.PI);
+             ctx.fillStyle = 'rgba(0, 255, 102, 0.2)';
+             ctx.fill();
+          }
+        }
+        ctx.restore();
       }
     }
 
@@ -736,6 +927,9 @@ function App() {
       setDisplayCprBpm(cprBpmRef.current);
       setDisplayCprDepthRatio(cprDepthRatioRef.current);
       setDisplayCprPlacementValid(cprPlacementValidRef.current);
+      setDisplayHeimlichPhase(heimlichPhaseRef.current);
+      setDisplayHeimlichJHookValid(heimlichJHookValidRef.current);
+      setDisplayHeimlichHandsClasped(heimlichHandsClaspedRef.current);
     }
 
     requestRef.current = requestAnimationFrame(processFrame);
@@ -776,6 +970,12 @@ function App() {
       cprPhaseRef.current = 'UP';
       cprMinYRef.current = 0;
       cprMaxYRef.current = 0;
+      
+      heimlichPhaseRef.current = 'STANCE';
+      heimlichJHookValidRef.current = false;
+      heimlichHandsClaspedRef.current = false;
+      heimlichTrajectoryRef.current = [];
+      heimlichAnchorRef.current = null;
 
       resumeAudioContext();
 
@@ -814,6 +1014,8 @@ function App() {
     setIsActive(false);
     setPulseCheckState('OFFLINE');
     setCprState('CPR_OFFLINE');
+    heimlichPhaseRef.current = 'STANCE';
+    heimlichAnchorRef.current = null;
     initializedTargetsRef.current = false;
     sternumInitializedRef.current = false;
     if (videoRef.current) {
@@ -856,6 +1058,12 @@ function App() {
               </option>
             ))}
           </select>
+          <button 
+            onClick={() => setShowHelp(true)}
+            className="border border-[#8ab4f8] text-[#8ab4f8] px-2 py-1 text-[10px] hover:bg-[#1a2f3d]"
+          >
+            ?_MANUAL
+          </button>
           {errorMsg ? (
             <span className="text-[#f87171] animate-pulse">SYS_ERR</span>
           ) : modelStatus !== 'READY' ? (
@@ -914,6 +1122,24 @@ function App() {
                   <span className="text-[#45627a] text-xs">ALGN: {displayCprPlacementValid ? 'TRUE' : 'FALSE'}</span>
                 </>
               )}
+              {activeMode === 'HEIMLICH' && (
+                <>
+                  <span className={`text-xs ${displayHeimlichJHookValid ? 'text-[#34d399]' : 'text-[#fbbf24]'}`}>
+                    &gt; TRAINING_PHASE: {displayHeimlichPhase}
+                  </span>
+                  <div className="flex flex-col gap-1 mt-2 text-xs">
+                    <span className="text-[#45627a]">
+                      SIDWAYS: {displayHeimlichPhase !== 'STANCE' ? <span className="text-[#34d399]">TRUE</span> : <span className="text-[#f87171]">FALSE</span>}
+                    </span>
+                    <span className="text-[#45627a]">
+                      HANDS: {displayHeimlichHandsClasped ? <span className="text-[#34d399]">CLASPED</span> : <span className="text-[#f87171]">WAITING</span>}
+                    </span>
+                    <span className="text-[#45627a]">
+                      THRUST: {displayHeimlichJHookValid ? <span className="text-[#34d399] font-bold animate-pulse">J-HOOK DETECTED</span> : '--'}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -957,6 +1183,13 @@ function App() {
                {activeMode === 'CPR' && (
                  <span className="text-[#e8f0fe]">&gt; LOCK HANDS. MAINTAIN 100-120 BPM. CENTER CHEST.</span>
                )}
+               {activeMode === 'HEIMLICH' && (
+                 <div className="flex flex-col">
+                   {displayHeimlichPhase === 'STANCE' && <span className="text-[#e8f0fe]">&gt; TURN 90 DEGREES (PROFILE VIEW) TO CAMERA.</span>}
+                   {displayHeimlichPhase === 'HANDS' && <span className="text-[#e8f0fe]">&gt; MAKE A FIST. CLASP HANDS TOGETHER ABOVE NAVEL.</span>}
+                   {displayHeimlichPhase === 'THRUST' && <span className="text-[#e8f0fe]">&gt; EXECUTE SHARP INWARD AND UPWARD THRUST.</span>}
+                 </div>
+               )}
             </div>
           </div>
         </div>
@@ -982,6 +1215,13 @@ function App() {
               <span>[2] CPR COMPRESSIONS</span>
               {activeMode === 'CPR' && <span>■</span>}
             </button>
+            <button 
+              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'HEIMLICH' ? 'bg-[#8ab4f8] text-[#000000]' : 'text-[#8ab4f8] hover:bg-[#1a2f3d]'}`} 
+              onClick={() => { setActiveMode('HEIMLICH'); resumeAudioContext(); }}
+            >
+              <span>[3] HEIMLICH TRAINING</span>
+              {activeMode === 'HEIMLICH' && <span>■</span>}
+            </button>
           </div>
 
           <div className="mt-4 flex flex-col gap-2 border-t border-[#1a2f3d] pt-2">
@@ -996,15 +1236,7 @@ function App() {
 
       </div>
 
-      {/* SLIDE-OVER HELP MANUAL - MRI THEMED */}
-      <button 
-        onClick={() => setShowHelp(true)}
-        className="absolute top-2 right-4 border border-[#8ab4f8] text-[#8ab4f8] px-2 py-1 text-[10px] hover:bg-[#1a2f3d] z-40 bg-[#000000]"
-      >
-        ?_MANUAL
-      </button>
-
-      {showHelp && (
+      {/* SLIDE-OVER HELP MANUAL - MRI THEMED */}      {showHelp && (
         <div className="absolute inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-[#000000]/80 backdrop-blur-sm" onClick={() => setShowHelp(false)}></div>
           <div className="w-full sm:w-[500px] h-full bg-[#000000] border-l border-[#8ab4f8] flex flex-col relative z-10 overflow-y-auto">
