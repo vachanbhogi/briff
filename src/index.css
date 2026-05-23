@@ -1,17 +1,22 @@
 @import "tailwindcss";
 
+@theme {
+  --color-neutral-dark: #08090c;
+  --color-border-dark: #181c26;
+}
+
 #root {
   width: 100%;
   min-height: 100vh;
   margin: 0;
   display: flex;
   flex-direction: column;
-  background-color: #000000;
+  background-color: var(--color-neutral-dark);
 }
 
 body {
   margin: 0;
-  background-color: #000000;
+  background-color: var(--color-neutral-dark);
   color: #ffffff;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
