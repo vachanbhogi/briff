@@ -1,10 +1,19 @@
 @import "tailwindcss";
 
 @theme {
-  --color-neutral-dark: #08090c;
-  --color-border-dark: #181c26;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --font-share: 'Share Tech Mono', monospace;
+  --color-mri-bg: #000000;
+  --color-mri-panel: #030b14;
+  --color-mri-grid: #1a2f3d;
+  --color-mri-text: #8ab4f8;
+  --color-mri-text-dim: #45627a;
+  --color-mri-white: #e8f0fe;
+  
+  --color-mri-green: #34d399;
+  --color-mri-red: #ef4444;
+  --color-mri-yellow: #fbbf24;
+
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-sans: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; /* Force mono everywhere */
 }
 
 #root {
@@ -13,44 +22,48 @@
   margin: 0;
   display: flex;
   flex-direction: column;
-  background-color: var(--color-neutral-dark);
+  background-color: var(--color-mri-bg);
 }
 
 body {
   margin: 0;
-  background-color: var(--color-neutral-dark);
-  color: #ffffff;
+  background-color: var(--color-mri-bg);
+  color: var(--color-mri-text);
   font-family: var(--font-mono);
+  overflow: hidden; /* App is full screen fixed */
 }
 
-/* Premium Motion Systems */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.animate-fadeIn {
-  animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-/* Custom smooth dark scrolls */
+/* Hide scrollbars for the pure app feel */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-neutral-dark);
+  background: var(--color-mri-bg);
+  border-left: 1px solid var(--color-mri-grid);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-dark);
-  border-radius: 9999px;
+  background: var(--color-mri-grid);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2a3140;
+  background: var(--color-mri-text-dim);
+}
+
+/* Animations */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.mri-scanline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: rgba(138, 180, 248, 0.15);
+  box-shadow: 0 0 10px rgba(138, 180, 248, 0.3);
+  animation: scanline 8s linear infinite;
+  pointer-events: none;
+  z-index: 50;
 }

@@ -9,6 +9,6 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    allowedHosts: ['old-hoops-camp.loca.lt'],
+    allowedHosts: ['silent-tools-agree.loca.lt'],
   },
 })
