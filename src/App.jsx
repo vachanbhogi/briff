@@ -86,6 +86,21 @@ function App() {
   
   const audioCtxRef = useRef(null);
   const lastTickRef = useRef(0);
+  const leftPulseLastActiveTimeRef = useRef(0);
+  const rightPulseLastActiveTimeRef = useRef(0);
+
+  const resumeAudioContext = () => {
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume();
+      }
+    } catch (e) {
+      console.warn('AudioContext initialization or resumption failed:', e);
+    }
+  };
 
   useEffect(() => {
     cprStateRef.current = cprState;
@@ -182,6 +197,26 @@ function App() {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      // Steady, real-time constant metronome beep at 110 BPM (~545.45ms interval) for CPR training (independent of tracking landmarks)
+      if (activeModeRef.current === 'CPR' && audioCtxRef.current && !muteMetronomeRef.current) {
+        if (performance.now() - lastTickRef.current >= 545.45) {
+          lastTickRef.current = performance.now();
+          try {
+            const osc = audioCtxRef.current.createOscillator();
+            const gain = audioCtxRef.current.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtxRef.current.destination);
+            osc.frequency.setValueAtTime(800, audioCtxRef.current.currentTime);
+            gain.gain.setValueAtTime(0.25, audioCtxRef.current.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtxRef.current.currentTime + 0.08);
+            osc.start();
+            osc.stop(audioCtxRef.current.currentTime + 0.08);
+          } catch (audioErr) {
+            console.warn('Audio metronome play failed:', audioErr);
+          }
+        }
+      }
+
       const startTimeMs = performance.now();
       
       // 1. Run Pose & Hand Landmarkers sequentially on WASM
@@ -210,20 +245,22 @@ function App() {
           // Fallback ratios based on nose-shoulder lines keep calculations steady when ears are blocked.
           let rawLeftX, rawLeftY;
           if (leftEar && leftEar.visibility > 0.5) {
-            rawLeftX = leftEar.x;
-            rawLeftY = leftEar.y + (leftShoulder.y - leftEar.y) * 0.38;
+            // Align inward 15% from the ear toward the nose (midline) to anchor exactly on the neck's carotid triangle
+            rawLeftX = leftEar.x + (nose.x - leftEar.x) * 0.15;
+            rawLeftY = leftEar.y + (leftShoulder.y - leftEar.y) * 0.42;
           } else {
-            rawLeftX = nose.x + (leftShoulder.x - nose.x) * 0.24;
-            rawLeftY = nose.y + (leftShoulder.y - nose.y) * 0.48;
+            rawLeftX = nose.x + (leftShoulder.x - nose.x) * 0.20;
+            rawLeftY = nose.y + (leftShoulder.y - nose.y) * 0.44;
           }
 
           let rawRightX, rawRightY;
           if (rightEar && rightEar.visibility > 0.5) {
-            rawRightX = rightEar.x;
-            rawRightY = rightEar.y + (rightShoulder.y - rightEar.y) * 0.38;
+            // Align inward 15% from the ear toward the nose (midline) to anchor exactly on the neck's carotid triangle
+            rawRightX = rightEar.x + (nose.x - rightEar.x) * 0.15;
+            rawRightY = rightEar.y + (rightShoulder.y - rightEar.y) * 0.42;
           } else {
-            rawRightX = nose.x + (rightShoulder.x - nose.x) * 0.24;
-            rawRightY = nose.y + (rightShoulder.y - nose.y) * 0.48;
+            rawRightX = nose.x + (rightShoulder.x - nose.x) * 0.20;
+            rawRightY = nose.y + (rightShoulder.y - nose.y) * 0.44;
           }
 
           // 2b. Apply exponential low-pass filter smoothing (85% historic, 15% new)
@@ -274,21 +311,7 @@ function App() {
               sternumTargetRef.current.y = sternumTargetRef.current.y * 0.88 + rawSternumY * 0.12;
             }
 
-            // Metronome
-            if (audioCtxRef.current && !muteMetronomeRef.current) {
-              if (performance.now() - lastTickRef.current >= 545.45) { // ~110 BPM
-                lastTickRef.current = performance.now();
-                const osc = audioCtxRef.current.createOscillator();
-                const gain = audioCtxRef.current.createGain();
-                osc.connect(gain);
-                gain.connect(audioCtxRef.current.destination);
-                osc.frequency.setValueAtTime(800, audioCtxRef.current.currentTime);
-                gain.gain.setValueAtTime(0.05, audioCtxRef.current.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.001, audioCtxRef.current.currentTime + 0.05);
-                osc.start();
-                osc.stop(audioCtxRef.current.currentTime + 0.05);
-              }
-            }
+            // Metronome was relocated to main processFrame loop to ensure uninterrupted beeps regardless of landmark detection
 
             // Shoulder Oscillation Tracking (2D Scale-Invariant)
             const history = shoulderYHistoryRef.current;
@@ -462,20 +485,23 @@ function App() {
             const middleTip = handLandmarks[12];
 
             if (indexTip && middleTip && neckTargets) {
-              // Proximity tests (both fingers must be within 5% distance of the target anchor)
-              const threshold = 0.052;
+              // Proximity tests (expanded to a highly generous 18% distance threshold for ultra-stable touch detection)
+              const threshold = 0.18;
 
               const lDistIndex = Math.hypot(indexTip.x - neckTargets.left.x, indexTip.y - neckTargets.left.y);
               const lDistMiddle = Math.hypot(middleTip.x - neckTargets.left.x, middleTip.y - neckTargets.left.y);
+              const lDistAvg = Math.hypot(((indexTip.x + middleTip.x) / 2) - neckTargets.left.x, ((indexTip.y + middleTip.y) / 2) - neckTargets.left.y);
               
               const rDistIndex = Math.hypot(indexTip.x - neckTargets.right.x, indexTip.y - neckTargets.right.y);
               const rDistMiddle = Math.hypot(middleTip.x - neckTargets.right.x, middleTip.y - neckTargets.right.y);
+              const rDistAvg = Math.hypot(((indexTip.x + middleTip.x) / 2) - neckTargets.right.x, ((indexTip.y + middleTip.y) / 2) - neckTargets.right.y);
 
-              if (lDistIndex < threshold && lDistMiddle < threshold) {
-                leftPulseTriggered = true;
+              // Match triggers if index finger, middle finger, OR their midpoint average is within the target area
+              if (lDistIndex < threshold || lDistMiddle < threshold || lDistAvg < threshold) {
+                leftPulseLastActiveTimeRef.current = performance.now();
               }
-              if (rDistIndex < threshold && rDistMiddle < threshold) {
-                rightPulseTriggered = true;
+              if (rDistIndex < threshold || rDistMiddle < threshold || rDistAvg < threshold) {
+                rightPulseLastActiveTimeRef.current = performance.now();
               }
             }
           } else if (activeModeRef.current === 'CPR') {
@@ -493,6 +519,17 @@ function App() {
         });
       }
 
+      // Resolve temporal pulse hold-trigger states (keeps matching active for up to 1200ms to completely eliminate any chattering or rapid state toggling)
+      if (activeModeRef.current === 'PULSE') {
+        const nowMs = performance.now();
+        if (nowMs - leftPulseLastActiveTimeRef.current < 1200) {
+          leftPulseTriggered = true;
+        }
+        if (nowMs - rightPulseLastActiveTimeRef.current < 1200) {
+          rightPulseTriggered = true;
+        }
+      }
+
       // Determine overall CPR placement status outside loop (needs to clear if hands gone)
       if (activeModeRef.current === 'CPR' && (!handResults.landmarks || handResults.landmarks.length === 0)) {
         cprPlacementValidRef.current = false;
@@ -508,7 +545,7 @@ function App() {
           const ly = neckTargets.left.y * canvas.height;
           
           ctx.beginPath();
-          ctx.arc(lx, ly, 16 + (leftPulseTriggered ? pulseVal * 2.5 : pulseVal), 0, 2 * Math.PI);
+          ctx.arc(lx, ly, 52 + (leftPulseTriggered ? pulseVal * 3.5 : pulseVal), 0, 2 * Math.PI);
           ctx.lineWidth = leftPulseTriggered ? 4 : 2;
           ctx.strokeStyle = leftPulseTriggered ? '#00ff66' : '#ff3366';
           ctx.shadowBlur = leftPulseTriggered ? 12 : 4;
@@ -526,7 +563,7 @@ function App() {
           ctx.shadowBlur = 0;
           ctx.save();
           ctx.scale(-1, 1);
-          ctx.fillText('CAROTID_PULSE_L', -(lx - 24), ly + 3);
+          ctx.fillText('CAROTID_PULSE_L', -(lx - 44), ly + 3);
           ctx.restore();
 
           // Draw Right Carotid Target
@@ -534,7 +571,7 @@ function App() {
           const ry = neckTargets.right.y * canvas.height;
           
           ctx.beginPath();
-          ctx.arc(rx, ry, 16 + (rightPulseTriggered ? pulseVal * 2.5 : pulseVal), 0, 2 * Math.PI);
+          ctx.arc(rx, ry, 52 + (rightPulseTriggered ? pulseVal * 3.5 : pulseVal), 0, 2 * Math.PI);
           ctx.lineWidth = rightPulseTriggered ? 4 : 2;
           ctx.strokeStyle = rightPulseTriggered ? '#00ff66' : '#ff3366';
           ctx.shadowBlur = rightPulseTriggered ? 12 : 4;
@@ -550,7 +587,7 @@ function App() {
           ctx.shadowBlur = 0;
           ctx.save();
           ctx.scale(-1, 1);
-          ctx.fillText('CAROTID_PULSE_R', -(rx + 90), ry + 3);
+          ctx.fillText('CAROTID_PULSE_R', -(rx + 110), ry + 3);
           ctx.restore();
 
           // 5. Heartbeat Radar Ripple Animation on Active Match
@@ -563,7 +600,7 @@ function App() {
             const count = 3;
             for (let i = 0; i < count; i++) {
               const progress = (time + i / count) % 1; // normalized expand time 0 to 1
-              const radius = 16 + progress * 55;
+              const radius = 52 + progress * 80;
               const alpha = 1 - progress; // fade out
               
               ctx.beginPath();
@@ -717,12 +754,7 @@ function App() {
       cprMinYRef.current = 0;
       cprMaxYRef.current = 0;
 
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      if (audioCtxRef.current.state === 'suspended') {
-        audioCtxRef.current.resume();
-      }
+      resumeAudioContext();
 
       const constraints = {
         video: deviceId ? { deviceId: { exact: deviceId } } : true,
@@ -945,6 +977,7 @@ function App() {
                     key={mode}
                     onClick={() => {
                       setActiveMode(mode);
+                      resumeAudioContext();
                       if (mode !== 'PULSE') {
                         setPulseCheckState('OFFLINE');
                       }
@@ -1042,7 +1075,10 @@ function App() {
               {/* Metronome Control (Only visible in CPR Mode) */}
               {activeMode === 'CPR' && (
                 <button 
-                  onClick={() => setMuteMetronome(!muteMetronome)}
+                  onClick={() => {
+                    setMuteMetronome(!muteMetronome);
+                    resumeAudioContext();
+                  }}
                   aria-label="Toggle CPR metronome audio beeps"
                   className={`flex items-center gap-2.5 cursor-pointer transition-all select-none py-2 px-4 border rounded-xl max-sm:w-full max-sm:justify-center h-10 sm:h-8 ${
                     !muteMetronome 
@@ -1066,6 +1102,7 @@ function App() {
                   key={mode}
                   onClick={() => {
                     setActiveMode(mode);
+                    resumeAudioContext();
                     if (mode !== 'PULSE') {
                       setPulseCheckState('OFFLINE');
                     }
