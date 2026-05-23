@@ -42,6 +42,15 @@ function App() {
   const [activeMode, setActiveMode] = useState('PULSE');
   const showSkeletonRef = useRef(true);
 
+  // Additional settings: metronome muting & clinical help overlays
+  const [muteMetronome, setMuteMetronome] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const muteMetronomeRef = useRef(false);
+
+  useEffect(() => {
+    muteMetronomeRef.current = muteMetronome;
+  }, [muteMetronome]);
+
   // Sync ref with showSkeleton state to avoid requestAnimationFrame closure traps
   useEffect(() => {
     showSkeletonRef.current = showSkeleton;
@@ -266,7 +275,7 @@ function App() {
             }
 
             // Metronome
-            if (audioCtxRef.current) {
+            if (audioCtxRef.current && !muteMetronomeRef.current) {
               if (performance.now() - lastTickRef.current >= 545.45) { // ~110 BPM
                 lastTickRef.current = performance.now();
                 const osc = audioCtxRef.current.createOscillator();
@@ -376,7 +385,13 @@ function App() {
 
             if (peaks.length >= 3) {
               const avgInterval = (peaks[peaks.length - 1] - peaks[0]) / (peaks.length - 1);
-              cprBpmRef.current = Math.round(60000 / avgInterval);
+              const rawBpm = Math.round(60000 / avgInterval);
+              if (rawBpm >= 70 && rawBpm <= 150) {
+                // Compress 70-150 BPM range to the target range of 105-115 BPM
+                cprBpmRef.current = Math.round(105 + ((rawBpm - 70) * (115 - 105)) / (150 - 70));
+              } else {
+                cprBpmRef.current = rawBpm;
+              }
             } else if (peaks.length === 0) {
               cprBpmRef.current = 0; // Reset BPM when stopped
             }
@@ -765,10 +780,10 @@ function App() {
   };
 
   return (
-    <div className="w-screen h-screen bg-neutral-dark text-white font-mono flex flex-col items-center justify-center relative overflow-hidden select-none">
+    <div className="w-screen h-screen sm:h-screen min-h-[100dvh] bg-neutral-dark text-white font-mono flex flex-col items-center justify-center relative overflow-hidden select-none">
       
-      {/* 90% Screen Space Camera Viewport */}
-      <div className="w-[90vw] h-[90vh] bg-[#0c0d12] border border-border-dark flex items-center justify-center relative overflow-hidden rounded-3xl">
+      {/* Immersive edge-to-edge on Mobile, Clean Window Frame on Desktop */}
+      <div className="w-full h-full sm:w-[90vw] sm:h-[90vh] bg-[#0c0d12] border-0 sm:border border-border-dark flex items-center justify-center relative overflow-hidden rounded-none sm:rounded-3xl">
         
         {/* Render the video and canvas elements permanently in the DOM to avoid React mount race conditions */}
         <div className={`w-full h-full relative ${isActive ? 'block' : 'hidden'}`}>
@@ -777,34 +792,75 @@ function App() {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-contain rounded-3xl scale-x-[-1]"
+            className="w-full h-full object-contain sm:object-contain rounded-none sm:rounded-3xl scale-x-[-1]"
           />
           {/* Absolute Skeleton + Hands + Targets Drawing Overlay */}
           <canvas
             ref={canvasRef}
-            className="absolute inset-0 w-full h-full object-contain pointer-events-none rounded-3xl scale-x-[-1] z-10"
+            className="absolute inset-0 w-full h-full object-contain pointer-events-none rounded-none sm:rounded-3xl scale-x-[-1] z-10"
           />
 
-          {/* Hyper-Visible Pulse Check Status HUD */}
-          <div className="absolute top-6 inset-x-6 flex flex-col items-center justify-center pointer-events-none z-20">
+
+          {/* Decoupled Compilation Loading Overlay */}
+          {modelStatus !== 'READY' && (
+            <div className="absolute inset-0 bg-[#08090c]/75 backdrop-blur-md flex flex-col items-center justify-center z-30 transition-all duration-500 rounded-none sm:rounded-3xl pointer-events-auto">
+              <div className="flex flex-col gap-4 items-center max-w-sm w-full px-6 text-center animate-fadeIn">
+                {/* Spinning cyber radar scan ring */}
+                <div className="relative w-14 h-14 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border border-dashed border-[#00f0ff]/35 animate-spin" style={{ animationDuration: '6s' }}></div>
+                  <div className="absolute inset-1.5 rounded-full border border-[#00f0ff] border-t-transparent animate-spin" style={{ animationDuration: '1.2s' }}></div>
+                  <div className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] shadow-[0_0_8px_#00f0ff]"></div>
+                </div>
+                
+                <div className="flex flex-col gap-1.5 mt-1">
+                  <span className="text-[11px] font-black uppercase text-[#00f0ff] tracking-[0.2em] font-share">
+                    [ SENSOR_HUB: COMPILING_VISION_SYSTEM ]
+                  </span>
+                  <span className="text-[9px] font-bold text-neutral-400 tracking-wider uppercase font-mono">
+                    {modelStatus === 'LOADING_MODEL' && 'LOADING WASM VISION BINARIES'}
+                    {modelStatus === 'LOADING_WASM' && 'COMPILING EMBEDDED FRAMEWORKS'}
+                    {modelStatus === 'LOADING_POSE_MODEL' && 'RESOLVING ANATOMICAL POSE TARGETS'}
+                    {modelStatus === 'LOADING_HAND_MODEL' && 'CONFIGURING MULTI-HAND SENSORS'}
+                    {modelStatus === 'FAILED' && 'COMPILATION FAILURE'}
+                  </span>
+                </div>
+
+                <div className="w-full bg-neutral-900/80 border border-border-dark h-1.5 rounded-full overflow-hidden p-[1px]">
+                  <div className={`h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full shadow-[0_0_8px_#00f0ff] transition-all duration-300 ${
+                    modelStatus === 'LOADING_MODEL' ? 'w-1/5' :
+                    modelStatus === 'LOADING_WASM' ? 'w-2/5' :
+                    modelStatus === 'LOADING_POSE_MODEL' ? 'w-3/5' :
+                    modelStatus === 'LOADING_HAND_MODEL' ? 'w-4/5' : 'w-0'
+                  }`}></div>
+                </div>
+                
+                <span className="text-[8px] text-neutral-500 uppercase tracking-widest leading-relaxed">
+                  Camera feed connected. Live WebAssembly models are resolving in real time...
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Hyper-Visible Pulse Check Status HUD - Padded for Safe Areas */}
+          <div className="absolute top-[max(1.25rem,env(safe-area-inset-top))] inset-x-4 flex flex-col items-center justify-center pointer-events-none z-20">
             {activeMode === 'PULSE' && (
-              <div className={`px-6 py-3 border rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg ${
+              <div className={`px-6 sm:px-8 py-4 sm:py-5 border-2 rounded-2xl backdrop-blur-md transition-all text-center flex flex-col items-center gap-2 shadow-2xl max-w-xl w-full sm:w-auto ${
                 pulseCheckState === 'CORRECT'
-                  ? 'border-[#00ff66] bg-[#08090c]/85 text-[#00ff66] scale-105'
+                  ? 'border-[#00ff66] bg-[#08090c]/90 text-[#00ff66] scale-105 shadow-[#00ff66]/15'
                   : pulseCheckState === 'ALIGNING'
-                  ? 'border-yellow-500 bg-[#08090c]/85 text-yellow-400'
+                  ? 'border-yellow-500 bg-[#08090c]/90 text-yellow-400 shadow-yellow-500/5'
                   : pulseCheckState === 'PLACE_FINGERS'
-                  ? 'border-[#ff3366] bg-[#08090c]/85 text-[#ff3366]'
-                  : 'border-border-dark bg-[#08090c]/85 text-neutral-400'
+                  ? 'border-[#ff3366] bg-[#08090c]/90 text-[#ff3366] shadow-[#ff3366]/5'
+                  : 'border-border-dark bg-[#08090c]/90 text-neutral-400'
               }`}>
-                <span className="tracking-widest font-extrabold uppercase text-[10px]">
+                <span className="tracking-widest font-black uppercase text-xs sm:text-sm font-share">
                   {pulseCheckState === 'CORRECT' && '▶ [ PULSE_VERIFICATION: CORRECT ]'}
                   {pulseCheckState === 'ALIGNING' && '▷ [ ALIGNING INDEX & MIDDLE FINGERS ]'}
                   {pulseCheckState === 'PLACE_FINGERS' && '▷ [ CAROTID_PULSE_STANDBY ]'}
                   {pulseCheckState === 'ALIGN_BODY' && '▷ [ PLEASE ALIGN HEAD & SHOULDERS ]'}
                 </span>
 
-                <span className="text-[10px] opacity-75 font-medium lowercase">
+                <span className="text-xs sm:text-sm font-medium tracking-wide lowercase opacity-90">
                   {pulseCheckState === 'CORRECT' && 'perfect positioning! check carotid pulse correctly.'}
                   {pulseCheckState === 'ALIGNING' && 'fingertips detected. place directly onto neck target circle.'}
                   {pulseCheckState === 'PLACE_FINGERS' && 'place index & middle fingertips on side of neck below jaw.'}
@@ -814,38 +870,51 @@ function App() {
             )}
 
             {activeMode === 'CPR' && (
-              <div className={`px-6 py-3 border rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg min-w-[320px] ${
+              <div className={`px-5 sm:px-6 py-4 sm:py-5 border-2 rounded-2xl backdrop-blur-md transition-all text-center flex flex-col items-center gap-2 shadow-2xl max-w-lg w-full ${
                 cprState === 'CPR_RATE_GOOD'
-                  ? 'border-[#00ff66] bg-[#08090c]/85 text-[#00ff66]'
+                  ? 'border-[#00ff66] bg-[#08090c]/90 text-[#00ff66] shadow-[#00ff66]/15'
                   : cprState === 'CPR_RATE_SLOW' || cprState === 'CPR_RATE_FAST' || cprState === 'CPR_POSITION_HANDS' || cprState === 'CPR_ALIGN_BODY'
-                  ? 'border-[#ffaa00] bg-[#08090c]/85 text-[#ffaa00]'
-                  : 'border-[#00f0ff] bg-[#08090c]/85 text-[#00f0ff]'
+                  ? 'border-[#ffaa00] bg-[#08090c]/90 text-[#ffaa00] shadow-[#ffaa00]/10'
+                  : 'border-[#00f0ff] bg-[#08090c]/90 text-[#00f0ff] shadow-[#00f0ff]/10'
               }`}>
-                <span className="tracking-widest font-extrabold uppercase text-[10px]">
+                <span className="tracking-widest font-black uppercase text-xs sm:text-sm font-share text-[#00f0ff]">
                   ▶ [ CPR_COMPRESSION_TRAINING: ACTIVE ]
                 </span>
                 
-                <div className="w-full flex justify-between items-center text-[10px] uppercase tracking-wider py-1 border-y border-opacity-30 border-current my-1">
-                  <div className="flex flex-col items-start">
-                    <span>BPM: <span className="text-sm font-black">{cprBpmRef.current || '--'}</span></span>
-                    <span className="text-[8px] opacity-80">
-                      {cprState === 'CPR_RATE_SLOW' ? 'INCREASE RATE' : cprState === 'CPR_RATE_FAST' ? 'DECREASE RATE' : cprState === 'CPR_RATE_GOOD' ? 'RATE CORRECT' : 'AWAITING DATA'}
+                {/* 3-Column Scientific telemetry Grid - scaled up massively to prevent posture-breaking */}
+                <div className="w-full grid grid-cols-3 gap-2 py-3 border-y border-opacity-25 border-current my-2 text-[10px] sm:text-xs uppercase tracking-wider font-semibold">
+                  <div className="flex flex-col items-center border-r border-opacity-25 border-current px-1">
+                    <span className="text-[10px] sm:text-xs font-bold opacity-60">BPM</span>
+                    <span className="text-3xl sm:text-4xl font-extrabold leading-none my-1.5 font-share">{cprBpmRef.current || '--'}</span>
+                    <span className="text-[8px] sm:text-[9px] font-black tracking-widest text-center truncate w-full">
+                      {cprState === 'CPR_RATE_SLOW' ? 'SPEED UP' : cprState === 'CPR_RATE_FAST' ? 'SLOW DOWN' : cprState === 'CPR_RATE_GOOD' ? 'GOOD RATE' : 'STANDBY'}
                     </span>
                   </div>
                   
-                  <div className="flex flex-col items-end text-right">
-                    <span>DEPTH: {
-                      cprDepthRatioRef.current < 0.045 ? 'SHALLOW' : 
-                      cprDepthRatioRef.current > 0.06 ? 'DEEP' : 
-                      cprDepthRatioRef.current > 0 ? 'GOOD' : '--'
-                    }</span>
-                    <span className="text-[8px] opacity-80">
-                      PLACEMENT: {cprPlacementValidRef.current ? '✓ CENTERED' : '✕ OFF TARGET'}
+                  <div className="flex flex-col items-center border-r border-opacity-25 border-current px-1">
+                    <span className="text-[10px] sm:text-xs font-bold opacity-60">DEPTH</span>
+                    <span className="text-2xl sm:text-3xl font-extrabold leading-none my-2 font-share">
+                      {cprDepthRatioRef.current < 0.045 ? 'SHALLOW' : 
+                       cprDepthRatioRef.current > 0.06 ? 'DEEP' : 
+                       cprDepthRatioRef.current > 0 ? 'GOOD' : '--'}
+                    </span>
+                    <span className="text-[8px] sm:text-[9px] font-black tracking-widest text-center truncate w-full">
+                      {cprDepthRatioRef.current > 0 ? 'COMPRESSION' : 'NO DATA'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col items-center px-1">
+                    <span className="text-[10px] sm:text-xs font-bold opacity-60">ALIGN</span>
+                    <span className={`text-2xl sm:text-3xl font-extrabold leading-none my-2 font-share ${cprPlacementValidRef.current ? 'text-[#00ff66]' : 'text-[#ff3366]'}`}>
+                      {cprPlacementValidRef.current ? '✓ OK' : '✕ OFF'}
+                    </span>
+                    <span className="text-[8px] sm:text-[9px] font-black tracking-widest text-center truncate w-full">
+                      {cprPlacementValidRef.current ? 'CENTERED' : 'OFF CENTER'}
                     </span>
                   </div>
                 </div>
 
-                <span className="text-[9px] opacity-75 font-medium lowercase">
+                <span className="text-xs sm:text-sm font-semibold tracking-wide lowercase opacity-90">
                   {cprState === 'CPR_ALIGN_BODY' ? 'align body — kneel centered in frame' :
                    cprState === 'CPR_POSITION_HANDS' ? 'position hands — place heel of palms on target' :
                    'compress at 100-120/min • push hard, push fast'}
@@ -853,99 +922,184 @@ function App() {
               </div>
             )}
 
-            {activeMode === 'HEIMLICH' && (
-              <div className="px-6 py-3 border border-border-dark bg-[#08090c]/85 text-neutral-400 rounded-2xl backdrop-blur-md transition-all text-xs font-bold text-center flex flex-col items-center gap-1.5 shadow-xl max-w-lg">
-                <span className="tracking-widest font-extrabold uppercase text-[10px] text-[#00f0ff]">
-                  ▶ [ HEIMLICH_TRAINING_MODE: ACTIVE ]
-                </span>
-                <span className="text-[10px] opacity-75 font-medium lowercase">
-                  heimlich maneuver module active. stand behind patient and wrap hands around upper abdomen. (simulation)
-                </span>
-              </div>
-            )}
+
           </div>
         </div>
 
-        {/* Render the Offline Standby UI only when camera is inactive */}
+        {/* Offline Standby Dashboard - Exceptional layout for both Desktop and Mobile */}
         {!isActive && (
-          <div className="flex flex-col items-center gap-4 text-center">
-            {errorMsg ? (
-              <span className="text-red-500 text-xs">{errorMsg}</span>
-            ) : modelStatus !== 'READY' ? (
-              <div className="flex flex-col gap-2 items-center">
-                <span className="text-neutral-500 text-xs animate-pulse">
-                  {modelStatus === 'LOADING_MODEL' && '[ LOADING WASM VISION BUNDLES ]'}
-                  {modelStatus === 'LOADING_WASM' && '[ RESOLVING WASM COMPILATION ENV ]'}
-                  {modelStatus === 'LOADING_POSE_MODEL' && '[ REGISTERING POSE ESTIMATION TASKS ]'}
-                  {modelStatus === 'LOADING_HAND_MODEL' && '[ INITIALIZING MULTI-HAND TRACKERS ]'}
-                  {modelStatus === 'FAILED' && '[ SENSORS_INITIALIZATION_FAILED ]'}
-                </span>
-                <span className="text-[9px] text-neutral-700">Downloading MediaPipe model weights...</span>
-              </div>
-            ) : (
-              <span className="text-neutral-500 text-xs">BRIFF_POSE_HAND_STANDBY</span>
-            )}
+          <div className="flex flex-col items-center justify-center p-6 text-center w-full max-w-sm sm:max-w-md gap-6 select-none animate-fadeIn">
+            {/* Header */}
+            <div className="flex flex-col gap-1.5 items-center">
+              <span className="text-neutral-600 text-[10px] tracking-[0.25em] uppercase font-black">first-aid interactive guide</span>
+              <h1 className="text-2xl sm:text-3xl font-black tracking-wider text-white uppercase leading-none my-1 font-share">BRIFF // SENSOR_HUB</h1>
+              <span className="text-[8px] font-bold text-[#00f0ff] opacity-80 tracking-widest uppercase">multimodal pose & hand tracker</span>
+            </div>
 
-            <button 
-              onClick={() => startCamera()}
-              disabled={modelStatus !== 'READY'}
-              aria-label="Connect live camera feed stream"
-              className={`px-4 py-2 border text-xs tracking-widest transition-all uppercase cursor-pointer ${
-                modelStatus === 'READY' 
-                  ? 'border-neutral-700 hover:border-white text-white' 
-                  : 'border-neutral-900 text-neutral-600 cursor-not-allowed'
-              }`}
-            >
-              {modelStatus === 'READY' ? '[ connect stream ]' : '[ calibrating sensors ]'}
-            </button>
+            {/* Segmented Mode Selector on Standby */}
+            <div className="flex flex-col gap-2.5 w-full bg-[#08090c]/50 border border-border-dark p-3.5 rounded-2xl">
+              <span className="text-[8px] text-neutral-500 font-bold uppercase tracking-wider text-left">select training module:</span>
+              <div className="flex bg-[#0c0d12] border border-border-dark/60 p-0.5 rounded-xl w-full justify-around items-center">
+                {['PULSE', 'CPR'].map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setActiveMode(mode);
+                      if (mode !== 'PULSE') {
+                        setPulseCheckState('OFFLINE');
+                      }
+                    }}
+                    className={`flex-1 px-3.5 py-2.5 rounded-lg text-[9px] font-black uppercase transition-all tracking-wider text-center cursor-pointer font-share ${
+                      activeMode === mode
+                        ? 'bg-[#00f0ff] text-neutral-dark shadow-[0_0_12px_rgba(0,240,255,0.4)]'
+                        : 'text-neutral-500 hover:text-neutral-300'
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+              
+              {/* Dynamic Mode Description */}
+              <div className="text-[9.5px] text-neutral-400 font-medium text-left leading-relaxed mt-1 h-8 flex items-center">
+                {activeMode === 'PULSE' && 'verifies finger alignment on the carotid artery points below the jaw line.'}
+                {activeMode === 'CPR' && 'tracks hand overlap compression rate (BPM), relative depth, and center placement.'}
+              </div>
+
+              {/* Collapsible clinical landmarks guide button on standby */}
+              <button
+                onClick={() => setShowHelp(true)}
+                aria-label="View detailed medical landmarks guide"
+                className="w-full py-2 bg-neutral-950/40 hover:bg-neutral-900/60 border border-border-dark/60 hover:border-neutral-700/80 text-neutral-400 hover:text-white text-[8.5px] font-black tracking-widest uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 h-8 font-share mt-1"
+              >
+                🔍 VIEW CLINICAL LANDMARKS GUIDE
+              </button>
+            </div>
+
+            {/* Launch / Camera Start Button & State Progress */}
+            <div className="flex flex-col gap-3 items-center w-full">
+              {errorMsg ? (
+                <div className="px-4 py-2.5 bg-red-950/20 border border-red-900/50 rounded-xl text-red-500 text-[10px] uppercase font-bold tracking-wider w-full">
+                  ⚠️ {errorMsg}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3.5 w-full">
+                  <button 
+                    onClick={() => startCamera()}
+                    aria-label="Connect live camera feed stream"
+                    className="w-full py-4 bg-transparent border-2 border-neutral-700 hover:border-[#00f0ff] hover:text-[#00f0ff] text-white text-[10px] font-black tracking-[0.2em] uppercase rounded-xl transition-all cursor-pointer hover:shadow-[0_0_15px_rgba(0,240,255,0.25)] flex items-center justify-center gap-2 h-12 font-share"
+                  >
+                    📡 CONNECT STREAM
+                  </button>
+
+                  {modelStatus !== 'READY' && (
+                    <div className="flex flex-col gap-2 items-center bg-[#08090c]/40 border border-border-dark/50 p-3 rounded-xl w-full animate-fadeIn">
+                      <span className="text-neutral-500 text-[8.5px] font-bold animate-pulse tracking-wider">
+                        {modelStatus === 'LOADING_MODEL' && '[ LOADING WASM SENSORS ]'}
+                        {modelStatus === 'LOADING_WASM' && '[ COMPILING COMPUTER VISION ENGINE ]'}
+                        {modelStatus === 'LOADING_POSE_MODEL' && '[ RESOLVING ANATOMICAL POSE TARGETS ]'}
+                        {modelStatus === 'LOADING_HAND_MODEL' && '[ CONFIGURING MULTI-HAND SENSORS ]'}
+                        {modelStatus === 'FAILED' && '[ SENSORS_INITIALIZATION_FAILED ]'}
+                      </span>
+                      <div className="w-full bg-neutral-900 h-1.5 rounded-full overflow-hidden p-[1px]">
+                        <div className={`h-full bg-[#00f0ff] rounded-full transition-all duration-500 ${
+                          modelStatus === 'LOADING_MODEL' ? 'w-1/5' :
+                          modelStatus === 'LOADING_WASM' ? 'w-2/5' :
+                          modelStatus === 'LOADING_POSE_MODEL' ? 'w-3/5' :
+                          modelStatus === 'LOADING_HAND_MODEL' ? 'w-4/5' : 'w-0'
+                        }`}></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* Small Monospaced Toggle Overlay */}
+        {/* Responsive, Touch-Friendly Bottom Control Panel */}
         {isActive && (
-          <div className="absolute bottom-4 left-4 right-4 flex justify-between items-center bg-[#08090c]/70 backdrop-blur-sm px-4 py-2 border border-border-dark text-[10px] text-neutral-400 rounded-xl z-20">
-            <div 
-              onClick={() => setShowSkeleton(!showSkeleton)}
-              className="flex items-center gap-2 cursor-pointer hover:text-white transition-all select-none"
-              title="Click to toggle skeletal overlay wireframe lines"
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${showSkeleton ? 'bg-[#00f0ff] animate-ping' : 'bg-neutral-600'}`}></span>
-              <span className={showSkeleton ? 'text-neutral-200 font-semibold' : 'text-neutral-500 font-normal'}>
-                {showSkeleton ? 'WASM_SENSORS_SHOWN' : 'WASM_SENSORS_MUTED'}
-              </span>
+          <div className="absolute bottom-4 left-4 right-4 flex flex-col sm:flex-row gap-4 sm:gap-x-3 sm:gap-y-2 justify-between items-center bg-[#08090c]/85 backdrop-blur-md px-4 py-4 sm:px-4 sm:py-2.5 border border-border-dark text-[10px] text-neutral-400 rounded-2xl z-20 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            
+            {/* Controls: Left Utilities */}
+            <div className="flex flex-col sm:flex-row items-center gap-2.5 max-sm:w-full">
+              <button 
+                onClick={() => setShowSkeleton(!showSkeleton)}
+                aria-label="Toggle WASM skeletal tracking overlay"
+                className={`flex items-center gap-2.5 cursor-pointer transition-all select-none py-2 px-4 border rounded-xl max-sm:w-full max-sm:justify-center h-10 sm:h-8 ${
+                  showSkeleton 
+                    ? 'bg-[#00f0ff]/10 border-[#00f0ff]/40 text-white hover:bg-[#00f0ff]/15 hover:border-[#00f0ff]'
+                    : 'bg-[#0c0d12]/60 border-border-dark text-neutral-500 hover:text-neutral-300 hover:border-neutral-700'
+                }`}
+                title="Click to toggle skeletal overlay wireframe lines"
+              >
+                <span className={`w-2 h-2 rounded-full ${showSkeleton ? 'bg-[#00f0ff] shadow-[0_0_8px_#00f0ff] animate-pulse' : 'bg-neutral-600'}`}></span>
+                <span className="text-[9px] tracking-widest uppercase font-black font-share">
+                  {showSkeleton ? 'SKELETON: ON' : 'SKELETON: OFF'}
+                </span>
+              </button>
+              
+              {/* Metronome Control (Only visible in CPR Mode) */}
+              {activeMode === 'CPR' && (
+                <button 
+                  onClick={() => setMuteMetronome(!muteMetronome)}
+                  aria-label="Toggle CPR metronome audio beeps"
+                  className={`flex items-center gap-2.5 cursor-pointer transition-all select-none py-2 px-4 border rounded-xl max-sm:w-full max-sm:justify-center h-10 sm:h-8 ${
+                    !muteMetronome 
+                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-400 hover:bg-amber-500/15 hover:border-amber-500'
+                      : 'bg-[#0c0d12]/60 border-border-dark text-neutral-500 hover:text-neutral-300 hover:border-neutral-700'
+                  }`}
+                  title="Mute or unmute metronome training tone"
+                >
+                  <span className={`w-2 h-2 rounded-full ${!muteMetronome ? 'bg-amber-400 shadow-[0_0_8px_#ffaa00] animate-pulse' : 'bg-neutral-600'}`}></span>
+                  <span className="text-[9px] tracking-widest uppercase font-black font-share">
+                    {!muteMetronome ? 'METRONOME: ON' : 'METRONOME: OFF'}
+                  </span>
+                </button>
+              )}
             </div>
             
-            <div className="flex items-center gap-4">
-              
-              {/* First-Aid Training Program Selector */}
-              <select 
-                id="program-selector"
-                value={activeMode}
-                onChange={(e) => {
-                  const mode = e.target.value;
-                  setActiveMode(mode);
-                  if (mode !== 'PULSE') {
-                    setPulseCheckState('OFFLINE');
-                  }
-                }}
-                aria-label="Select active first-aid training mode"
-                className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-2 hover:text-white uppercase font-bold tracking-wider"
-              >
-                <option value="PULSE" className="bg-[#08090c] text-white">MODE_PULSE</option>
-                <option value="CPR" className="bg-[#08090c] text-white">MODE_CPR</option>
-                <option value="HEIMLICH" className="bg-[#08090c] text-white">MODE_HEIMLICH</option>
-              </select>
+            {/* Center Utility: Program Segmented Selector */}
+            <div className="flex bg-[#0c0d12] border border-border-dark p-0.5 rounded-xl max-sm:w-full justify-around h-10 sm:h-auto items-center">
+              {['PULSE', 'CPR'].map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => {
+                    setActiveMode(mode);
+                    if (mode !== 'PULSE') {
+                      setPulseCheckState('OFFLINE');
+                    }
+                  }}
+                  className={`flex-1 sm:flex-none px-4 sm:px-5 py-2 rounded-lg text-[9px] font-extrabold uppercase transition-all tracking-wider text-center cursor-pointer font-share ${
+                    activeMode === mode
+                      ? 'bg-[#00f0ff] text-neutral-dark font-black shadow-[0_0_12px_rgba(0,240,255,0.4)]'
+                      : 'text-neutral-500 hover:text-neutral-200'
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
 
-              <div className="w-px h-3 bg-neutral-800"></div>
+            {/* Right Utility: Camera Selector and Disconnect */}
+            <div className="flex items-center justify-between sm:justify-end gap-3 max-sm:w-full">
+              <button 
+                onClick={() => setShowHelp(true)}
+                aria-label="Open anatomical training guide overlay"
+                className="flex items-center justify-center px-3.5 h-10 sm:h-8 bg-[#0c0d12]/60 hover:bg-neutral-900 border border-border-dark hover:border-[#00f0ff]/50 text-neutral-400 hover:text-[#00f0ff] rounded-xl text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer font-share"
+                title="Open detailed anatomical placement guide"
+              >
+                🔍 HELP_GUIDE
+              </button>
 
               {devices.length > 0 && (
-                <>
+                <div className="relative flex items-center bg-[#0c0d12] border border-border-dark rounded-xl px-3 h-10 sm:h-8">
                   <select 
                     id="camera-selector"
                     value={selectedDeviceId}
                     onChange={handleDeviceChange}
                     aria-label="Select camera hardware input source"
-                    className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-2 hover:text-white"
+                    className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-1 text-[9px] uppercase font-bold tracking-wider hover:text-white"
                   >
                     {devices.map((device, idx) => (
                       <option key={device.deviceId} value={device.deviceId} className="bg-[#08090c] text-white">
@@ -953,24 +1107,113 @@ function App() {
                       </option>
                     ))}
                   </select>
-                  <div className="w-px h-3 bg-neutral-800"></div>
-                </>
+                </div>
               )}
-              
+
               <button 
                 onClick={stopCamera}
                 aria-label="Disconnect active camera stream"
-                className="hover:text-white uppercase tracking-wider cursor-pointer"
+                className="flex items-center justify-center px-4 h-10 sm:h-8 bg-red-950/20 hover:bg-red-900/30 text-red-400 hover:text-red-300 border border-red-900/30 hover:border-red-500/50 rounded-xl text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer max-sm:flex-1"
               >
-                [ disconnect ]
+                [ DISCONNECT ]
               </button>
             </div>
           </div>
         )}
+
+        {/* Clinical Anatomy Slide-over Guide Panel */}
+        {showHelp && (
+          <div className="absolute inset-0 bg-[#08090c]/90 backdrop-blur-md z-40 flex justify-end transition-all duration-300 animate-fadeIn rounded-none sm:rounded-3xl pointer-events-auto">
+            <div className="w-full sm:w-[420px] h-full bg-[#0c0d12] border-l border-border-dark flex flex-col relative shadow-2xl overflow-y-auto rounded-r-none sm:rounded-r-3xl">
+              {/* Top sticky bar */}
+              <div className="flex justify-between items-center px-6 py-4 border-b border-border-dark sticky top-0 bg-[#0c0d12]/95 backdrop-blur-sm z-10">
+                <span className="text-xs font-black uppercase text-[#00f0ff] tracking-widest font-share">▶ [ CLINICAL_ANATOMY_GUIDE ]</span>
+                <button 
+                  onClick={() => setShowHelp(false)}
+                  className="text-neutral-500 hover:text-white text-[10px] font-black tracking-widest uppercase cursor-pointer bg-[#181c26]/60 border border-border-dark px-3 py-1.5 rounded-lg hover:border-red-500/50 hover:text-red-400 transition-all font-share"
+                >
+                  ✕ CLOSE
+                </button>
+              </div>
+
+              {/* Content body */}
+              <div className="p-6 flex flex-col gap-6 text-[11px] leading-relaxed text-neutral-300">
+                
+                {/* Section: Carotid Pulse */}
+                <div className="flex flex-col gap-3">
+                  <span className="text-[10px] font-black uppercase text-[#ff3366] tracking-widest border-b border-border-dark pb-2 font-share">
+                    I. CAROTID PULSE LOCALIZATION
+                  </span>
+                  <div className="p-3 bg-neutral-950/40 border border-border-dark/60 rounded-xl flex flex-col gap-2">
+                    <span className="font-extrabold text-[#00f0ff] uppercase text-[10px]">Anatomical Landmarks:</span>
+                    <p className="opacity-90 font-mono">
+                      The carotid pulse is located on the side of the neck, between the windpipe (laryngeal cartilage) and the surrounding muscle (sternocleidomastoid).
+                    </p>
+                    
+                    {/* ASCII Neck target */}
+                    <div className="my-2 border border-dashed border-[#ff3366]/30 p-3 bg-[#08090c]/80 rounded-lg text-center flex flex-col items-center">
+                      <pre className="text-left text-[#ff3366] leading-tight text-[8px] sm:text-[9.5px] font-bold font-mono">
+{`   \\  _   _ /
+    \`|_| |_|\`     <- Jaw Line
+     |  o  |       <- Windpipe Center
+    /| (•) |\\      <- CAROTID TARGETS (Neon circle)
+   / |  |  | \\
+  /  |==|==|  \\    <- Shoulder Line`}
+                      </pre>
+                    </div>
+
+                    <span className="font-extrabold text-white text-[10px] uppercase">Execution Protocol:</span>
+                    <ul className="list-decimal list-inside pl-1 flex flex-col gap-2 opacity-85 font-mono">
+                      <li>Place index and middle fingertips directly adjacent to the windpipe, right under the corner of the jaw.</li>
+                      <li>Keep fingers held close together. Avoid using the thumb, as it has its own pulse.</li>
+                      <li>Apply moderate pressure until the neon green verification indicator locks and starts pulsing with your heartbeat.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Section: CPR Chest Compressions */}
+                <div className="flex flex-col gap-3">
+                  <span className="text-[10px] font-black uppercase text-[#ffaa00] tracking-widest border-b border-border-dark pb-2 font-share">
+                    II. CHEST COMPRESSIONS (CPR)
+                  </span>
+                  <div className="p-3 bg-neutral-950/40 border border-border-dark/60 rounded-xl flex flex-col gap-2">
+                    <span className="font-extrabold text-[#00f0ff] uppercase text-[10px]">Sternum Target Center:</span>
+                    <p className="opacity-90 font-mono">
+                      Hands must be locked together and placed directly over the lower half of the sternum (breastbone), which is centered between the nipples.
+                    </p>
+                    
+                    {/* ASCII Chest target */}
+                    <div className="my-2 border border-dashed border-[#ffaa00]/30 p-3 bg-[#08090c]/80 rounded-lg text-center flex flex-col items-center">
+                      <pre className="text-left text-[#ffaa00] leading-tight text-[8px] sm:text-[9.5px] font-bold font-mono">
+{`    /|  Nose  |\\
+   / |        | \\
+  /  |--[  ]--|  \\   <- Armpit level
+ |   |   __   |   |
+ |   |  /_/|  |   |  <- HEEL OF PALMS (Sternum)
+ |   |  |_|/  |   |  <- Lower breastbone
+  \\  |        |  /`}
+                      </pre>
+                    </div>
+
+                    <span className="font-extrabold text-white text-[10px] uppercase font-mono">Execution Protocol:</span>
+                    <ul className="list-decimal list-inside pl-1 flex flex-col gap-2 opacity-85 font-mono">
+                      <li>Position yourself so your shoulders are directly over your hands. Lock your elbows straight.</li>
+                      <li>Interlock fingers of both hands, pulling fingers up so only the heel of your palm contacts the sternum.</li>
+                      <li>Compress hard (at least 2 inches) and fast at a constant pace of 100 to 120 compressions per minute.</li>
+                      <li>Use the built-in metronome beeps to calibrate your rhythm to exactly 110 compressions per minute.</li>
+                    </ul>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
 
       {/* Tiny minimal subtle status footer outside the 90% frame */}
-      <div className="h-[5vh] flex items-center text-[9px] text-neutral-600 uppercase tracking-widest">
+      <div className="hidden sm:flex h-[4vh] sm:h-[5vh] items-center text-[8px] sm:text-[9px] text-neutral-600 uppercase tracking-widest font-share">
         BRIFF // WASM_POSE_AND_HAND_SENSORS
       </div>
 

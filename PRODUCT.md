@@ -10,7 +10,7 @@ First-aid learners, medical students, and emergency response trainees practicing
 ## Product Purpose
 A hyper-minimalist, real-time training companion that utilizes WebAssembly computer vision (Pose and Hands) to guide and verify correct first-aid actions. 
 - *Current Focus*: Guiding and verifying correct finger placement on the carotid pulse points, improving self-diagnostic training accuracy.
-- *Future Scope*: Expanding multi-model tracking systems to train and verify other vital first-aid actions, such as **CPR chest compressions** (measuring depth and rate of hand overlaps) and the **Heimlich maneuver** (detecting proper hand wrapping and thrust positions on the upper abdomen).
+- *Future Scope*: Expanding multi-model tracking systems to train and verify other vital first-aid actions, such as **CPR chest compressions** (measuring depth and rate of hand overlaps).
 
 ## Brand Personality
 Precise, raw, technical. Extremely functional, high-fidelity, and styled with a clean monospace cyberpunk aesthetic.
