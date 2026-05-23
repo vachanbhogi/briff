@@ -38,6 +38,7 @@ function App() {
   const [modelStatus, setModelStatus] = useState('LOADING_MODEL');
   const [pulseCheckState, setPulseCheckState] = useState('OFFLINE'); // OFFLINE, PLACE_FINGERS, DETECTING, CORRECT
   const [showSkeleton, setShowSkeleton] = useState(true);
+  const [activeMode, setActiveMode] = useState('PULSE');
   const showSkeletonRef = useRef(true);
 
   // Sync ref with showSkeleton state to avoid requestAnimationFrame closure traps
@@ -544,19 +545,37 @@ function App() {
             </div>
             
             <div className="flex items-center gap-4">
+              
+              {/* First-Aid Training Program Selector */}
+              <select 
+                value={activeMode}
+                onChange={(e) => setActiveMode(e.target.value)}
+                aria-label="Select active first-aid training mode"
+                className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-2 hover:text-white uppercase font-bold tracking-wider"
+              >
+                <option value="PULSE" className="bg-[#08090c] text-white">MODE_PULSE</option>
+                <option value="CPR" className="bg-[#08090c] text-white">MODE_CPR</option>
+                <option value="HEIMLICH" className="bg-[#08090c] text-white">MODE_HEIMLICH</option>
+              </select>
+
+              <div className="w-px h-3 bg-neutral-800"></div>
+
               {devices.length > 1 && (
-                <select 
-                  value={selectedDeviceId}
-                  onChange={handleDeviceChange}
-                  aria-label="Select camera hardware input source"
-                  className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-2 hover:text-white"
-                >
-                  {devices.map((device, idx) => (
-                    <option key={device.deviceId} value={device.deviceId} className="bg-[#08090c] text-white">
-                      {device.label || `CAM_${idx + 1}`}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <select 
+                    value={selectedDeviceId}
+                    onChange={handleDeviceChange}
+                    aria-label="Select camera hardware input source"
+                    className="bg-transparent text-neutral-400 border-none outline-none cursor-pointer pr-2 hover:text-white"
+                  >
+                    {devices.map((device, idx) => (
+                      <option key={device.deviceId} value={device.deviceId} className="bg-[#08090c] text-white">
+                        {device.label || `CAM_${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="w-px h-3 bg-neutral-800"></div>
+                </>
               )}
               
               <button 
