@@ -1125,9 +1125,7 @@ function App() {
           <span className="font-bold tracking-widest text-mri-white sm:hidden">BRIFF</span>
         </div>
         <div className="flex items-center gap-2">
-          {arduinoConnected ? (
-            <span className="text-mri-green text-[10px] sm:text-xs border border-mri-green px-2 py-1 mr-2 bg-mri-green/10">USB_LINKED</span>
-          ) : null}
+
           <select 
             className="bg-mri-panel border border-mri-grid text-mri-text text-[10px] p-1 outline-none w-20 sm:w-24 truncate"
             value={selectedDeviceId || ''}
@@ -1302,12 +1300,6 @@ function App() {
             >
               <span>[3] HEIMLICH TRAINING</span>
               {activeMode === 'HEIMLICH' && <span>■</span>}
-            </button>
-            <button 
-              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors border border-dashed mt-2 ${arduinoConnected ? 'text-mri-green border-mri-green bg-mri-green/10' : 'text-mri-yellow border-mri-grid hover:bg-mri-grid'}`}
-              onClick={connectArduino}
-            >
-              <span>{arduinoConnected ? '[ ARDUINO CONNECTED ]' : '[ LINK ARDUINO ]'}</span>
             </button>
 
           </div>
