@@ -1304,28 +1304,6 @@ function App() {
               <span>{arduinoConnected ? '[ ARDUINO CONNECTED ]' : '[ LINK ARDUINO ]'}</span>
             </button>
 
-            {arduinoConnected && (
-              <button 
-                className="text-left flex items-center justify-between p-2 cursor-pointer transition-colors text-[#00f0ff] border border-dashed border-[#00f0ff] hover:bg-[#00f0ff]/10 mt-2" 
-                onClick={() => {
-                  if (serialWriterRef.current) {
-                    console.log('Manual Test: Sending V');
-                    lastSentCommandRef.current = 'V';
-                    serialWriterRef.current.write('V').catch(e => console.error(e));
-                    // Auto stop after 3s like the Heimlich logic
-                    setTimeout(() => {
-                      if (serialWriterRef.current) {
-                        console.log('Manual Test: Sending S');
-                        lastSentCommandRef.current = 'S';
-                        serialWriterRef.current.write('S').catch(e => console.error(e));
-                      }
-                    }, 3000);
-                  }
-                }}
-              >
-                <span>[ TEST ARDUINO BUZZER ]</span>
-              </button>
-            )}
           </div>
 
           <div className="mt-4 flex flex-col gap-2 border-t border-[#1a2f3d] pt-2">
