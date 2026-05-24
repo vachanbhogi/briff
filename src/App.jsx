@@ -1310,11 +1310,13 @@ function App() {
                 onClick={() => {
                   if (serialWriterRef.current) {
                     console.log('Manual Test: Sending V');
+                    lastSentCommandRef.current = 'V';
                     serialWriterRef.current.write('V').catch(e => console.error(e));
                     // Auto stop after 3s like the Heimlich logic
                     setTimeout(() => {
                       if (serialWriterRef.current) {
                         console.log('Manual Test: Sending S');
+                        lastSentCommandRef.current = 'S';
                         serialWriterRef.current.write('S').catch(e => console.error(e));
                       }
                     }, 3000);
