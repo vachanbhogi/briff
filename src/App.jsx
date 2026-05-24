@@ -37,7 +37,7 @@ function App() {
   const [handLandmarker, setHandLandmarker] = useState(null);
   const [modelStatus, setModelStatus] = useState('LOADING_MODEL');
   const [pulseCheckState, setPulseCheckState] = useState('OFFLINE'); // OFFLINE, PLACE_FINGERS, DETECTING, CORRECT
-  const [showSkeleton, setShowSkeleton] = useState(true);
+  const [showSkeleton] = useState(true);
   const [cprState, setCprState] = useState('CPR_OFFLINE');
   const [activeMode, setActiveMode] = useState('PULSE');
   const showSkeletonRef = useRef(true);
@@ -65,7 +65,7 @@ function App() {
   const lastSentCommandRef = useRef(null);
 
   // Additional settings: metronome muting & clinical help overlays
-  const [muteMetronome, setMuteMetronome] = useState(false);
+  const [muteMetronome] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const muteMetronomeRef = useRef(false);
 
@@ -184,8 +184,8 @@ function App() {
         const deviceList = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = deviceList.filter(device => device.kind === 'videoinput');
         setDevices(videoDevices);
-        if (videoDevices.length > 0 && !selectedDeviceId) {
-          setSelectedDeviceId(videoDevices[0].deviceId);
+        if (videoDevices.length > 0) {
+          setSelectedDeviceId(prev => prev || videoDevices[0].deviceId);
         }
       } catch (err) {
         console.error('Error listing devices:', err);
@@ -196,7 +196,9 @@ function App() {
       try {
         const s = await navigator.mediaDevices.getUserMedia({ video: true });
         s.getTracks().forEach(track => track.stop());
-      } catch (e) {}
+      } catch {
+        // Ignored
+      }
       await getDevices();
     };
     initCameras();
@@ -210,6 +212,7 @@ function App() {
   }, []);
 
   // Main real-time multi-model tracking and rendering loop
+  /* eslint-disable react-hooks/purity */
   const processFrame = () => {
     if (!videoRef.current || !canvasRef.current || !poseLandmarker || !handLandmarker || !isActive) {
       requestRef.current = requestAnimationFrame(processFrame);
@@ -850,7 +853,7 @@ function App() {
           }
 
           // State Machine & Arduino Serial Transmission
-          let newCprState = 'CPR_POSITION_HANDS';
+          let newCprState;
           let ardCommand = 'S';
           
           if (!isValid) {
@@ -985,6 +988,7 @@ function App() {
 
     requestRef.current = requestAnimationFrame(processFrame);
   };
+  /* eslint-enable react-hooks/purity */
 
   // Toggle loops
   useEffect(() => {
@@ -996,7 +1000,7 @@ function App() {
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [isActive, poseLandmarker, handLandmarker]);
+  }, [isActive, poseLandmarker, handLandmarker]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bulletproof camera stream binding watcher to avoid React mount race conditions
   useEffect(() => {
@@ -1066,7 +1070,9 @@ function App() {
         const deviceList = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = deviceList.filter(device => device.kind === 'videoinput');
         setDevices(videoDevices);
-      } catch (e) {}
+      } catch {
+        // Ignored
+      }
       
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
@@ -1109,21 +1115,21 @@ function App() {
   };
 
   return (
-    <main className="w-full h-screen bg-[#000000] text-[#8ab4f8] font-mono text-xs overflow-hidden flex flex-col p-1 sm:p-2 border-2 sm:border-8 border-[#000000] box-border relative select-none">
+    <main className="w-full h-screen bg-mri-bg text-mri-text font-mono text-xs overflow-hidden flex flex-col p-1 sm:p-2 border-2 sm:border-8 border-mri-bg box-border relative select-none">
       <div className="mri-scanline"></div>
       
       {/* HEADER */}
-      <div className="flex justify-between items-center px-4 py-2 border border-[#1a2f3d] mb-1 sm:mb-2 bg-[#030b14] shrink-0">
+      <div className="flex justify-between items-center px-4 py-2 border border-mri-grid mb-1 sm:mb-2 bg-mri-panel shrink-0">
         <div className="flex items-center gap-4">
-          <span className="font-bold tracking-widest text-[#e8f0fe] hidden sm:inline">BRIFF_DIAGNOSTICS</span>
-          <span className="font-bold tracking-widest text-[#e8f0fe] sm:hidden">BRIFF</span>
+          <span className="font-bold tracking-widest text-mri-white hidden sm:inline">BRIFF_DIAGNOSTICS</span>
+          <span className="font-bold tracking-widest text-mri-white sm:hidden">BRIFF</span>
         </div>
         <div className="flex items-center gap-2">
           {arduinoConnected ? (
-            <span className="text-[#34d399] text-[10px] sm:text-xs border border-[#34d399] px-2 py-1 mr-2 bg-[#34d399]/10">USB_LINKED</span>
+            <span className="text-mri-green text-[10px] sm:text-xs border border-mri-green px-2 py-1 mr-2 bg-mri-green/10">USB_LINKED</span>
           ) : null}
           <select 
-            className="bg-[#030b14] border border-[#1a2f3d] text-[#8ab4f8] text-[10px] p-1 outline-none w-20 sm:w-24 truncate"
+            className="bg-mri-panel border border-mri-grid text-mri-text text-[10px] p-1 outline-none w-20 sm:w-24 truncate"
             value={selectedDeviceId || ''}
             onChange={handleDeviceChange}
           >
@@ -1135,18 +1141,18 @@ function App() {
           </select>
           <button 
             onClick={() => setShowHelp(true)}
-            className="border border-[#8ab4f8] text-[#8ab4f8] px-2 py-1 text-[10px] hover:bg-[#1a2f3d]"
+            className="border border-mri-text text-mri-text px-2 py-1 text-[10px] hover:bg-mri-grid"
           >
             ?_MANUAL
           </button>
           {errorMsg ? (
-            <span className="text-[#f87171] animate-pulse">SYS_ERR</span>
+            <span className="text-mri-red animate-pulse">SYS_ERR</span>
           ) : modelStatus !== 'READY' ? (
-            <span className="text-[#fbbf24] animate-pulse">INIT</span>
+            <span className="text-mri-yellow animate-pulse">INIT</span>
           ) : (
-            <span className="text-[#34d399]">ONLINE</span>
+            <span className="text-mri-green">ONLINE</span>
           )}
-          <span className="w-2 h-2 bg-[#34d399] rounded-none animate-pulse"></span>
+          <span className="w-2 h-2 bg-mri-green rounded-none animate-pulse"></span>
         </div>
       </div>
 
@@ -1154,17 +1160,17 @@ function App() {
       <div className="flex-1 flex flex-col sm:grid sm:grid-cols-3 sm:grid-rows-2 gap-1 sm:gap-2 min-h-0 overflow-y-auto sm:overflow-hidden">
         
         {/* VIEWPORT 1 (MAIN CAMERA FEED) - Spans 2 rows and 2 columns */}
-        <div className="bg-[#000000] relative flex-none h-[75vh] sm:h-auto sm:col-span-2 sm:row-span-2 border border-[#1a2f3d] flex items-center justify-center overflow-hidden shrink-0">
+        <div className="bg-mri-bg relative flex-none h-[75vh] sm:h-auto sm:col-span-2 sm:row-span-2 border border-mri-grid flex items-center justify-center overflow-hidden shrink-0">
           {/* Axis Labels */}
-          <div className="absolute top-2 left-2 text-[10px] text-[#45627a] pointer-events-none z-20">AXIAL</div>
-          <div className="absolute bottom-2 left-2 text-[10px] text-[#45627a] pointer-events-none z-20">A</div>
-          <div className="absolute top-2 right-2 text-[10px] text-[#45627a] pointer-events-none z-20">L</div>
-          <div className="absolute bottom-2 right-2 text-[10px] text-[#45627a] pointer-events-none z-20">P</div>
-          <div className="absolute top-1/2 right-2 -translate-y-1/2 text-[10px] text-[#45627a] pointer-events-none z-20">R</div>
+          <div className="absolute top-2 left-2 text-[10px] text-mri-text-dim pointer-events-none z-20">AXIAL</div>
+          <div className="absolute bottom-2 left-2 text-[10px] text-mri-text-dim pointer-events-none z-20">A</div>
+          <div className="absolute top-2 right-2 text-[10px] text-mri-text-dim pointer-events-none z-20">L</div>
+          <div className="absolute bottom-2 right-2 text-[10px] text-mri-text-dim pointer-events-none z-20">P</div>
+          <div className="absolute top-1/2 right-2 -translate-y-1/2 text-[10px] text-mri-text-dim pointer-events-none z-20">R</div>
 
           {/* Crosshairs */}
-          <div className="absolute top-0 bottom-0 left-1/2 border-l border-dashed border-[#1a2f3d] opacity-50 z-10 pointer-events-none"></div>
-          <div className="absolute left-0 right-0 top-1/2 border-t border-dashed border-[#1a2f3d] opacity-50 z-10 pointer-events-none"></div>
+          <div className="absolute top-0 bottom-0 left-1/2 border-l border-dashed border-mri-grid opacity-50 z-10 pointer-events-none"></div>
+          <div className="absolute left-0 right-0 top-1/2 border-t border-dashed border-mri-grid opacity-50 z-10 pointer-events-none"></div>
 
           {/* Video Feed */}
           <div className={`w-full h-full relative ${isActive ? 'block' : 'hidden'}`}>
@@ -1172,45 +1178,45 @@ function App() {
             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain pointer-events-none scale-x-[-1] z-20" />
             
             {/* Real-time Telemetry Data Overlay */}
-            <div className="absolute bottom-4 left-4 z-30 flex flex-col gap-1 font-mono pointer-events-none bg-[#000000]/60 p-2 border border-[#1a2f3d]">
+            <div className="absolute bottom-4 left-4 z-30 flex flex-col gap-1 font-mono pointer-events-none bg-mri-bg/60 p-2 border border-mri-grid">
               {activeMode === 'PULSE' && (
                 <>
-                  <span className={`text-xs ${pulseCheckState === 'CORRECT' ? 'text-[#34d399]' : 'text-[#8ab4f8]'}`}>
+                  <span className={`text-xs ${pulseCheckState === 'CORRECT' ? 'text-mri-green' : 'text-mri-text'}`}>
                     &gt; TRG_ACQ: {pulseCheckState}
                   </span>
                   <div className="flex items-baseline gap-2 mt-1">
-                    <span className="text-2xl sm:text-5xl font-bold text-[#e8f0fe]">{isActive ? 'CALC...' : '--'}</span>
-                    <span className="text-[#45627a] text-[10px] sm:text-xs">BPM</span>
+                    <span className="text-2xl sm:text-5xl font-bold text-mri-white">{isActive ? 'CALC...' : '--'}</span>
+                    <span className="text-mri-text-dim text-[10px] sm:text-xs">BPM</span>
                   </div>
                 </>
               )}
               {activeMode === 'CPR' && (
                 <>
-                  <span className={`text-xs ${cprState === 'CPR_RATE_GOOD' ? 'text-[#34d399]' : 'text-[#fbbf24]'}`}>
+                  <span className={`text-xs ${cprState === 'CPR_RATE_GOOD' ? 'text-mri-green' : 'text-mri-yellow'}`}>
                     &gt; CPR_STAT: {cprState}
                   </span>
                   <div className="flex items-baseline gap-2 mt-1">
-                    <span className="text-2xl sm:text-5xl font-bold text-[#e8f0fe]">{isActive ? displayCprBpm : '--'}</span>
-                    <span className="text-[#45627a] text-[10px] sm:text-xs">BPM</span>
+                    <span className="text-2xl sm:text-5xl font-bold text-mri-white">{isActive ? displayCprBpm : '--'}</span>
+                    <span className="text-mri-text-dim text-[10px] sm:text-xs">BPM</span>
                   </div>
-                  <span className="text-[#45627a] text-xs">DPTH: {isActive ? displayCprDepthRatio.toFixed(3) : '--'} </span>
-                  <span className="text-[#45627a] text-xs">ALGN: {displayCprPlacementValid ? 'TRUE' : 'FALSE'}</span>
+                  <span className="text-mri-text-dim text-xs">DPTH: {isActive ? displayCprDepthRatio.toFixed(3) : '--'} </span>
+                  <span className="text-mri-text-dim text-xs">ALGN: {displayCprPlacementValid ? 'TRUE' : 'FALSE'}</span>
                 </>
               )}
               {activeMode === 'HEIMLICH' && (
                 <>
-                  <span className={`text-xs ${displayHeimlichJHookValid ? 'text-[#34d399]' : 'text-[#fbbf24]'}`}>
+                  <span className={`text-xs ${displayHeimlichJHookValid ? 'text-mri-green' : 'text-mri-yellow'}`}>
                     &gt; TRAINING_PHASE: {displayHeimlichPhase}
                   </span>
                   <div className="flex flex-col gap-1 mt-2 text-xs">
-                    <span className="text-[#45627a]">
-                      SIDWAYS: {displayHeimlichPhase !== 'STANCE' ? <span className="text-[#34d399]">TRUE</span> : <span className="text-[#f87171]">FALSE</span>}
+                    <span className="text-mri-text-dim">
+                      SIDWAYS: {displayHeimlichPhase !== 'STANCE' ? <span className="text-mri-green">TRUE</span> : <span className="text-mri-red">FALSE</span>}
                     </span>
-                    <span className="text-[#45627a]">
-                      HANDS: {displayHeimlichHandsClasped ? <span className="text-[#34d399]">CLASPED</span> : <span className="text-[#f87171]">WAITING</span>}
+                    <span className="text-mri-text-dim">
+                      HANDS: {displayHeimlichHandsClasped ? <span className="text-mri-green">CLASPED</span> : <span className="text-mri-red">WAITING</span>}
                     </span>
-                    <span className="text-[#45627a]">
-                      THRUST: {displayHeimlichJHookValid ? <span className="text-[#34d399] font-bold animate-pulse">J-HOOK DETECTED</span> : '--'}
+                    <span className="text-mri-text-dim">
+                      THRUST: {displayHeimlichJHookValid ? <span className="text-mri-green font-bold animate-pulse">J-HOOK DETECTED</span> : '--'}
                     </span>
                   </div>
                 </>
@@ -1222,7 +1228,7 @@ function App() {
           {!isActive && !errorMsg && modelStatus === 'READY' && (
              <div className="absolute inset-0 flex items-center justify-center z-20 flex-col gap-4">
                <span className="animate-pulse text-lg tracking-widest">&gt; STANDBY_MODE</span>
-               <button onClick={() => startCamera()} className="border border-[#8ab4f8] px-4 py-2 hover:bg-[#1a2f3d] transition-colors uppercase">
+               <button onClick={() => startCamera()} className="border border-mri-text px-4 py-2 hover:bg-mri-grid transition-colors uppercase">
                  INITIALIZE SCANNER
                </button>
              </div>
@@ -1230,14 +1236,14 @@ function App() {
 
           {modelStatus !== 'READY' && !errorMsg && (
              <div className="absolute inset-0 flex items-center justify-center z-20 flex-col gap-4">
-               <div className="w-16 h-16 border-2 border-dashed border-[#8ab4f8] rounded-full animate-spin"></div>
-               <span className="animate-pulse text-[#fbbf24] uppercase">&gt; CALIBRATING_SYSTEM: {modelStatus}</span>
+               <div className="w-16 h-16 border-2 border-dashed border-mri-text rounded-full animate-spin"></div>
+               <span className="animate-pulse text-mri-yellow uppercase">&gt; CALIBRATING_SYSTEM: {modelStatus}</span>
              </div>
           )}
 
           {errorMsg && (
             <div className="absolute inset-0 flex items-center justify-center z-20">
-               <span className="text-[#f87171] border border-[#f87171] px-4 py-2 bg-[#f87171]/10 uppercase">
+               <span className="text-mri-red border border-mri-red px-4 py-2 bg-mri-red/10 uppercase">
                  &gt; ERR: {errorMsg}
                </span>
             </div>
@@ -1245,24 +1251,24 @@ function App() {
         </div>
 
         {/* VIEWPORT 2 (DIAGNOSTIC CHARTS/INFO) */}
-        <div className="bg-[#000000] relative p-4 flex flex-col border border-[#1a2f3d] justify-between min-h-[200px] sm:min-h-0">
-          <div className="absolute top-2 left-2 text-[10px] text-[#45627a] pointer-events-none">CORONAL (DATA_STREAM)</div>
+        <div className="bg-mri-bg relative p-4 flex flex-col border border-mri-grid justify-between min-h-50 sm:min-h-0">
+          <div className="absolute top-2 left-2 text-[10px] text-mri-text-dim pointer-events-none">CORONAL (DATA_STREAM)</div>
           
           <div className="mt-6 flex flex-col gap-4">
             
             <div className="flex flex-col gap-1 text-[10px] sm:text-xs">
-               <span className="text-[#45627a]">SYS_MSG:</span>
+               <span className="text-mri-text-dim">SYS_MSG:</span>
                {activeMode === 'PULSE' && (
-                 <span className="text-[#e8f0fe]">&gt; ALIGN INDEX & MIDDLE FINGERS TO JAW TARGET.</span>
+                 <span className="text-mri-white">&gt; ALIGN INDEX & MIDDLE FINGERS TO JAW TARGET.</span>
                )}
                {activeMode === 'CPR' && (
-                 <span className="text-[#e8f0fe]">&gt; LOCK HANDS. MAINTAIN 100-120 BPM. CENTER CHEST.</span>
+                 <span className="text-mri-white">&gt; LOCK HANDS. MAINTAIN 100-120 BPM. CENTER CHEST.</span>
                )}
                {activeMode === 'HEIMLICH' && (
                  <div className="flex flex-col">
-                   {displayHeimlichPhase === 'STANCE' && <span className="text-[#e8f0fe]">&gt; TURN 90 DEGREES (PROFILE VIEW) TO CAMERA.</span>}
-                   {displayHeimlichPhase === 'HANDS' && <span className="text-[#e8f0fe]">&gt; MAKE A FIST. CLASP HANDS TOGETHER ABOVE NAVEL.</span>}
-                   {displayHeimlichPhase === 'THRUST' && <span className="text-[#e8f0fe]">&gt; EXECUTE SHARP INWARD AND UPWARD THRUST.</span>}
+                   {displayHeimlichPhase === 'STANCE' && <span className="text-mri-white">&gt; TURN 90 DEGREES (PROFILE VIEW) TO CAMERA.</span>}
+                   {displayHeimlichPhase === 'HANDS' && <span className="text-mri-white">&gt; MAKE A FIST. CLASP HANDS TOGETHER ABOVE NAVEL.</span>}
+                   {displayHeimlichPhase === 'THRUST' && <span className="text-mri-white">&gt; EXECUTE SHARP INWARD AND UPWARD THRUST.</span>}
                  </div>
                )}
             </div>
@@ -1270,35 +1276,35 @@ function App() {
         </div>
 
         {/* VIEWPORT 3 (CONTROLS & SETTINGS) */}
-        <div className="bg-[#000000] relative p-4 flex flex-col border border-[#1a2f3d] justify-between min-h-[200px] sm:min-h-0">
-          <div className="absolute top-2 left-2 text-[10px] text-[#45627a] pointer-events-none">SAGITTAL (SYSTEM_CTRL)</div>
+        <div className="bg-mri-bg relative p-4 flex flex-col border border-mri-grid justify-between min-h-50 sm:min-h-0">
+          <div className="absolute top-2 left-2 text-[10px] text-mri-text-dim pointer-events-none">SAGITTAL (SYSTEM_CTRL)</div>
           
           <div className="flex flex-col gap-1 mt-6 text-[10px] sm:text-xs">
-            <span className="text-[#45627a] mb-2 border-b border-[#1a2f3d] pb-1 uppercase">Select Protocol:</span>
+            <span className="text-mri-text-dim mb-2 border-b border-mri-grid pb-1 uppercase">Select Protocol:</span>
             
             <button 
-              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'PULSE' ? 'bg-[#8ab4f8] text-[#000000]' : 'text-[#8ab4f8] hover:bg-[#1a2f3d]'}`} 
+              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'PULSE' ? 'bg-mri-text text-mri-bg' : 'text-mri-text hover:bg-mri-grid'}`} 
               onClick={() => { setActiveMode('PULSE'); resumeAudioContext(); }}
             >
               <span>[1] PULSE VERIFICATION</span>
               {activeMode === 'PULSE' && <span>■</span>}
             </button>
             <button 
-              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'CPR' ? 'bg-[#8ab4f8] text-[#000000]' : 'text-[#8ab4f8] hover:bg-[#1a2f3d]'}`} 
+              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'CPR' ? 'bg-mri-text text-mri-bg' : 'text-mri-text hover:bg-mri-grid'}`} 
               onClick={() => { setActiveMode('CPR'); resumeAudioContext(); }}
             >
               <span>[2] CPR COMPRESSIONS</span>
               {activeMode === 'CPR' && <span>■</span>}
             </button>
             <button 
-              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'HEIMLICH' ? 'bg-[#8ab4f8] text-[#000000]' : 'text-[#8ab4f8] hover:bg-[#1a2f3d]'}`} 
+              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors ${activeMode === 'HEIMLICH' ? 'bg-mri-text text-mri-bg' : 'text-mri-text hover:bg-mri-grid'}`} 
               onClick={() => { setActiveMode('HEIMLICH'); resumeAudioContext(); }}
             >
               <span>[3] HEIMLICH TRAINING</span>
               {activeMode === 'HEIMLICH' && <span>■</span>}
             </button>
             <button 
-              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors border border-dashed mt-2 ${arduinoConnected ? 'text-[#00ff66] border-[#00ff66] bg-[#00ff66]/10' : 'text-[#fbbf24] border-[#1a2f3d] hover:bg-[#1a2f3d]'}`}
+              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors border border-dashed mt-2 ${arduinoConnected ? 'text-mri-green border-mri-green bg-mri-green/10' : 'text-mri-yellow border-mri-grid hover:bg-mri-grid'}`}
               onClick={connectArduino}
             >
               <span>{arduinoConnected ? '[ ARDUINO CONNECTED ]' : '[ LINK ARDUINO ]'}</span>
@@ -1306,10 +1312,10 @@ function App() {
 
           </div>
 
-          <div className="mt-4 flex flex-col gap-2 border-t border-[#1a2f3d] pt-2">
+          <div className="mt-4 flex flex-col gap-2 border-t border-mri-grid pt-2">
             <button 
               onClick={isActive ? stopCamera : () => startCamera()} 
-              className={`border p-2 text-center text-[10px] font-bold uppercase transition-colors ${isActive ? 'border-[#f87171] text-[#f87171] hover:bg-[#f87171]/10' : 'border-[#34d399] text-[#34d399] hover:bg-[#34d399]/10'}`}
+              className={`border p-2 text-center text-[10px] font-bold uppercase transition-colors ${isActive ? 'border-mri-red text-mri-red hover:bg-mri-red/10' : 'border-mri-green text-mri-green hover:bg-mri-green/10'}`}
             >
               {isActive ? 'HALT_SCAN' : 'ENGAGE_SCAN'}
             </button>
@@ -1318,48 +1324,49 @@ function App() {
 
       </div>
 
-      {/* SLIDE-OVER HELP MANUAL - MRI THEMED */}      {showHelp && (
+      {/* SLIDE-OVER HELP MANUAL - MRI THEMED */}
+      {showHelp && (
         <div className="absolute inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-[#000000]/80 backdrop-blur-sm" onClick={() => setShowHelp(false)}></div>
-          <div className="w-full sm:w-[500px] h-full bg-[#000000] border-l border-[#8ab4f8] flex flex-col relative z-10 overflow-y-auto">
+          <div className="absolute inset-0 bg-mri-bg/80 backdrop-blur-sm" onClick={() => setShowHelp(false)}></div>
+          <div className="w-full sm:w-125 h-full bg-mri-bg border-l border-mri-text flex flex-col relative z-10 overflow-y-auto">
             
-            <div className="p-4 border-b border-[#1a2f3d] flex justify-between items-center bg-[#030b14] sticky top-0">
-              <h2 className="text-lg text-[#e8f0fe] font-bold tracking-widest">&gt; DIAGNOSTIC_MANUAL.txt</h2>
-              <button onClick={() => setShowHelp(false)} className="text-[#f87171] border border-[#f87171] px-2 hover:bg-[#f87171]/20">X_CLOSE</button>
+            <div className="p-4 border-b border-mri-grid flex justify-between items-center bg-mri-panel sticky top-0">
+              <h2 className="text-lg text-mri-white font-bold tracking-widest">&gt; DIAGNOSTIC_MANUAL.txt</h2>
+              <button onClick={() => setShowHelp(false)} className="text-mri-red border border-mri-red px-2 hover:bg-mri-red/20">X_CLOSE</button>
             </div>
 
-            <div className="p-4 flex flex-col gap-6 text-xs text-[#8ab4f8]">
+            <div className="p-4 flex flex-col gap-6 text-xs text-mri-text">
                 {/* Section 1 */}
-                <div className="flex flex-col gap-2 border border-[#1a2f3d] p-4">
-                  <span className="text-[#fbbf24] border-b border-[#1a2f3d] pb-2 font-bold">&gt; MODULE_01: PULSE_ACQ</span>
+                <div className="flex flex-col gap-2 border border-mri-grid p-4">
+                  <span className="text-mri-yellow border-b border-mri-grid pb-2 font-bold">&gt; MODULE_01: PULSE_ACQ</span>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                     <div>
-                      <p className="text-[#45627a] mb-2">Align index & middle fingers to carotid artery (groove between windpipe and neck muscle).</p>
+                      <p className="text-mri-text-dim mb-2">Align index & middle fingers to carotid artery (groove between windpipe and neck muscle).</p>
                       <ul className="text-white list-disc pl-4 space-y-1 ml-2">
                         <li>System tracks hand positioning.</li>
                         <li>Do not use thumb (contains own pulse).</li>
                         <li>Ensure camera sees head & shoulders.</li>
                       </ul>
                     </div>
-                    <div className="border border-dashed border-[#1a2f3d] p-2 text-center flex flex-col justify-center items-center text-[#45627a] bg-[#030b14]">
+                    <div className="border border-dashed border-mri-grid p-2 text-center flex flex-col justify-center items-center text-mri-text-dim bg-mri-panel">
                       <pre className="text-left text-[8px] sm:text-[10px] leading-tight font-mono">
-{`   \  _   _ /
+{`   \\  _   _ /
     \`|_| |_|\`     <- Jaw Line
      |  o  |       <- Windpipe Center
-    /| (•) |\      <- TARGET
-   / |  |  | \
-  /  |==|==|  \    <- Shoulder Line`}
+    /| (•) |\\      <- TARGET
+   / |  |  | \\
+  /  |==|==|  \\    <- Shoulder Line`}
                       </pre>
                     </div>
                   </div>
                 </div>
 
                 {/* Section 2 */}
-                <div className="flex flex-col gap-2 border border-[#1a2f3d] p-4">
-                  <span className="text-[#fbbf24] border-b border-[#1a2f3d] pb-2 font-bold">&gt; MODULE_02: COMPRESSIONS_CPR</span>
+                <div className="flex flex-col gap-2 border border-mri-grid p-4">
+                  <span className="text-mri-yellow border-b border-mri-grid pb-2 font-bold">&gt; MODULE_02: COMPRESSIONS_CPR</span>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                     <div>
-                      <p className="text-[#45627a] mb-2">Lock hands over lower half of sternum. Shoulders directly over hands. Straight elbows.</p>
+                      <p className="text-mri-text-dim mb-2">Lock hands over lower half of sternum. Shoulders directly over hands. Straight elbows.</p>
                       <ul className="text-white list-disc pl-4 space-y-1 ml-2">
                         <li>Only palm heel contacts sternum.</li>
                         <li>Depth: &gt; 2 inches.</li>
@@ -1367,15 +1374,15 @@ function App() {
                         <li>Use metronome for sync.</li>
                       </ul>
                     </div>
-                    <div className="border border-dashed border-[#1a2f3d] p-2 text-center flex flex-col justify-center items-center text-[#45627a] bg-[#030b14]">
+                    <div className="border border-dashed border-mri-grid p-2 text-center flex flex-col justify-center items-center text-mri-text-dim bg-mri-panel">
                       <pre className="text-left text-[8px] sm:text-[10px] leading-tight font-mono">
-{`    /|  Nose  |\
-   / |        | \
-  /  |--[  ]--|  \ 
+{`    /|  Nose  |\\
+   / |        | \\
+  /  |--[  ]--|  \\ 
  |   |   __   |   |
  |   |  /_/|  |   |  <- PALMS
  |   |  |_|/  |   |  
-  \  |        |  /`}
+  \\  |        |  /`}
                       </pre>
                     </div>
                   </div>
