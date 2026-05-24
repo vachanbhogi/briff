@@ -57,6 +57,12 @@ function App() {
   const heimlichHandsClaspedRef = useRef(false);
   const heimlichTrajectoryRef = useRef([]);
   const heimlichAnchorRef = useRef(null);
+  const heimlichSuccessTimeRef = useRef(0);
+
+  // Web Serial API States for Arduino
+  const [arduinoConnected, setArduinoConnected] = useState(false);
+  const serialWriterRef = useRef(null);
+  const lastSentCommandRef = useRef(null);
 
   // Additional settings: metronome muting & clinical help overlays
   const [muteMetronome, setMuteMetronome] = useState(false);
@@ -505,10 +511,12 @@ function App() {
               if (heimlichPhaseRef.current === 'HANDS' && isClasped && isCorrectHeight && isSideways) {
                 heimlichPhaseRef.current = 'THRUST';
               } else if (!isSideways) {
-                // If they turn back around, reset to stance
-                heimlichPhaseRef.current = 'STANCE';
-                heimlichJHookValidRef.current = false;
-                heimlichTrajectoryRef.current = [];
+                // If they turn back around, reset to stance, unless we are in the 3-second victory window
+                if (startTimeMs - heimlichSuccessTimeRef.current > 3000) {
+                  heimlichPhaseRef.current = 'STANCE';
+                  heimlichJHookValidRef.current = false;
+                  heimlichTrajectoryRef.current = [];
+                }
               }
 
               // Phase 3: Thrust Trajectory Tracking
@@ -536,13 +544,28 @@ function App() {
                   // If they moved up significantly and fast enough, and had some horizontal motion
                   if (deltaY > 0.08 && deltaX > 0.02 && velocityY > 0.0001) {
                     heimlichJHookValidRef.current = true;
+                    heimlichSuccessTimeRef.current = startTimeMs;
                   }
                 }
               } else if (heimlichPhaseRef.current === 'THRUST' && !isClasped) {
-                 // Reset thrust validation if hands un-clasp
+                 // Reset thrust validation if hands un-clasp, unless we are in the 3-second victory window
+                 if (startTimeMs - heimlichSuccessTimeRef.current > 3000) {
+                   heimlichJHookValidRef.current = false;
+                   heimlichTrajectoryRef.current = [];
+                   heimlichPhaseRef.current = 'HANDS';
+                 }
+              }
+              
+              // Force state lock for 3 seconds after success to let Arduino play the victory chime
+              if (heimlichJHookValidRef.current && (startTimeMs - heimlichSuccessTimeRef.current < 3000)) {
+                 heimlichPhaseRef.current = 'THRUST'; // Keep in thrust phase
+              } else if (heimlichJHookValidRef.current && (startTimeMs - heimlichSuccessTimeRef.current >= 3000)) {
+                 // Reset after 3 seconds
                  heimlichJHookValidRef.current = false;
                  heimlichTrajectoryRef.current = [];
-                 heimlichPhaseRef.current = 'HANDS';
+                 if (!isClasped) {
+                   heimlichPhaseRef.current = 'HANDS';
+                 }
               }
             }
           }
@@ -826,22 +849,50 @@ function App() {
             }
           }
 
-          // State Machine
+          // State Machine & Arduino Serial Transmission
+          let newCprState = 'CPR_POSITION_HANDS';
+          let ardCommand = 'S';
+          
           if (!isValid) {
-            setCprState('CPR_POSITION_HANDS');
+            newCprState = 'CPR_POSITION_HANDS';
           } else {
             const bpm = cprBpmRef.current;
-            if (bpm === 0) setCprState('CPR_COMPRESSING');
-            else if (bpm < 100) setCprState('CPR_RATE_SLOW');
-            else if (bpm <= 120) setCprState('CPR_RATE_GOOD');
-            else setCprState('CPR_RATE_FAST');
+            if (bpm === 0) {
+               newCprState = 'CPR_COMPRESSING';
+            } else if (bpm < 100) {
+               newCprState = 'CPR_RATE_SLOW';
+               ardCommand = 'L';
+            } else if (bpm <= 120) {
+               newCprState = 'CPR_RATE_GOOD';
+               ardCommand = 'G';
+            } else {
+               newCprState = 'CPR_RATE_FAST';
+               ardCommand = 'F';
+            }
+          }
+          setCprState(newCprState);
+          
+          if (serialWriterRef.current && ardCommand !== lastSentCommandRef.current) {
+            lastSentCommandRef.current = ardCommand;
+            serialWriterRef.current.write(ardCommand).catch(e => console.error(e));
           }
         } else {
           setCprState('CPR_ALIGN_BODY');
+          if (serialWriterRef.current && lastSentCommandRef.current !== 'S') {
+            lastSentCommandRef.current = 'S';
+            serialWriterRef.current.write('S').catch(e => console.error(e));
+          }
         }
       } else if (activeModeRef.current === 'HEIMLICH') {
-        const phase = heimlichPhaseRef.current;
         const valid = heimlichJHookValidRef.current;
+        const ardCommand = valid ? 'V' : 'S';
+        
+        if (serialWriterRef.current && lastSentCommandRef.current !== ardCommand) {
+          lastSentCommandRef.current = ardCommand;
+          serialWriterRef.current.write(ardCommand).catch(e => console.error(e));
+        }
+        
+        const phase = heimlichPhaseRef.current;
         
         let cx = canvas.width / 2;
         let cy = canvas.height / 2;
@@ -954,6 +1005,26 @@ function App() {
     }
   }, [stream]);
 
+  const connectArduino = async () => {
+    try {
+      console.log('Requesting Arduino port...');
+      if (!('serial' in navigator)) {
+        setErrorMsg('WEB SERIAL API NOT SUPPORTED. USE CHROME/EDGE.');
+        return;
+      }
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 9600 });
+      const textEncoder = new TextEncoderStream();
+      textEncoder.readable.pipeTo(port.writable);
+      serialWriterRef.current = textEncoder.writable.getWriter();
+      setArduinoConnected(true);
+      console.log('Arduino connected successfully!');
+    } catch (err) {
+      console.error('Serial connection error:', err);
+      // User cancelled or port in use
+    }
+  };
+
   const startCamera = async (deviceId = selectedDeviceId) => {
     try {
       setErrorMsg('');
@@ -976,6 +1047,7 @@ function App() {
       heimlichHandsClaspedRef.current = false;
       heimlichTrajectoryRef.current = [];
       heimlichAnchorRef.current = null;
+      heimlichSuccessTimeRef.current = 0;
 
       resumeAudioContext();
 
@@ -1047,6 +1119,9 @@ function App() {
           <span className="font-bold tracking-widest text-[#e8f0fe] sm:hidden">BRIFF</span>
         </div>
         <div className="flex items-center gap-2">
+          {arduinoConnected ? (
+            <span className="text-[#34d399] text-[10px] sm:text-xs border border-[#34d399] px-2 py-1 mr-2 bg-[#34d399]/10">USB_LINKED</span>
+          ) : null}
           <select 
             className="bg-[#030b14] border border-[#1a2f3d] text-[#8ab4f8] text-[10px] p-1 outline-none w-20 sm:w-24 truncate"
             value={selectedDeviceId || ''}
@@ -1222,6 +1297,33 @@ function App() {
               <span>[3] HEIMLICH TRAINING</span>
               {activeMode === 'HEIMLICH' && <span>■</span>}
             </button>
+            <button 
+              className={`text-left flex items-center justify-between p-2 cursor-pointer transition-colors border border-dashed mt-2 ${arduinoConnected ? 'text-[#00ff66] border-[#00ff66] bg-[#00ff66]/10' : 'text-[#fbbf24] border-[#1a2f3d] hover:bg-[#1a2f3d]'}`}
+              onClick={connectArduino}
+            >
+              <span>{arduinoConnected ? '[ ARDUINO CONNECTED ]' : '[ LINK ARDUINO ]'}</span>
+            </button>
+
+            {arduinoConnected && (
+              <button 
+                className="text-left flex items-center justify-between p-2 cursor-pointer transition-colors text-[#00f0ff] border border-dashed border-[#00f0ff] hover:bg-[#00f0ff]/10 mt-2" 
+                onClick={() => {
+                  if (serialWriterRef.current) {
+                    console.log('Manual Test: Sending V');
+                    serialWriterRef.current.write('V').catch(e => console.error(e));
+                    // Auto stop after 3s like the Heimlich logic
+                    setTimeout(() => {
+                      if (serialWriterRef.current) {
+                        console.log('Manual Test: Sending S');
+                        serialWriterRef.current.write('S').catch(e => console.error(e));
+                      }
+                    }, 3000);
+                  }
+                }}
+              >
+                <span>[ TEST ARDUINO BUZZER ]</span>
+              </button>
+            )}
           </div>
 
           <div className="mt-4 flex flex-col gap-2 border-t border-[#1a2f3d] pt-2">
